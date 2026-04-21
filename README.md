@@ -63,7 +63,7 @@ cp .env.example .env
 编辑 `.env` 填写：
 
 ```env
-GITHUB_TOKEN=ghp_xxxxxxxxxxxx
+GITHUB_TOKEN=YOUR_GITHUB_TOKEN
 ENTERPRISE_SLUG=YourEnterprise
 PRODUCT=Copilot
 ```
