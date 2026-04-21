@@ -69,8 +69,9 @@ function pickUser(item) {
 function buildQueryParams(extra = {}) {
   const params = new URLSearchParams();
 
-  const year = extra.year || requiredEnv("BILLING_YEAR");
-  const month = extra.month || requiredEnv("BILLING_MONTH");
+  const now = new Date();
+  const year = extra.year || requiredEnv("BILLING_YEAR") || String(now.getFullYear());
+  const month = extra.month || requiredEnv("BILLING_MONTH") || String(now.getMonth() + 1);
   const day = extra.day || requiredEnv("BILLING_DAY");
   const product = extra.product || requiredEnv("PRODUCT");
   const model = extra.model || requiredEnv("MODEL");
@@ -491,7 +492,10 @@ app.post("/api/usage/refresh", async (req, res) => {
       mode = result.mode;
       rawItemsCount = result.rawItemsCount;
       source = result.source;
-      dateLabel = `${requiredEnv("BILLING_YEAR")}-${requiredEnv("BILLING_MONTH")}${requiredEnv("BILLING_DAY") ? "-" + requiredEnv("BILLING_DAY") : ""}`;
+      const nowLabel = new Date();
+      const labelYear = requiredEnv("BILLING_YEAR") || String(nowLabel.getFullYear());
+      const labelMonth = requiredEnv("BILLING_MONTH") || String(nowLabel.getMonth() + 1);
+      dateLabel = `${labelYear}-${labelMonth}${requiredEnv("BILLING_DAY") ? "-" + requiredEnv("BILLING_DAY") : ""}`;
     }
 
     ranking = enrichRanking(ranking);
@@ -608,8 +612,9 @@ app.get("/api/billing/summary", async (_req, res) => {
 app.get("/api/billing/models", async (req, res) => {
   try {
     const endpoint = buildEndpoint();
-    const year = req.query.year || requiredEnv("BILLING_YEAR");
-    const month = req.query.month || requiredEnv("BILLING_MONTH");
+    const nowM = new Date();
+    const year = req.query.year || requiredEnv("BILLING_YEAR") || String(nowM.getFullYear());
+    const month = req.query.month || requiredEnv("BILLING_MONTH") || String(nowM.getMonth() + 1);
     const params = new URLSearchParams();
     if (year) params.set("year", String(year));
     if (month) params.set("month", String(month));
