@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Copilot 每用户用量排行榜</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="page">
+      <section class="card">
+        <header class="topbar">
+          <h1>Copilot 每用户用量显示</h1>
+        </header>
+
+        <div class="query-bar">
+          <div class="query-bar-left">
+            <div class="query-tabs">
+              <button class="tab active" data-mode="single">按日期查询</button>
+              <button class="tab" data-mode="range">按日期范围查询</button>
+            </div>
+            <div class="query-inputs">
+              <div id="singlePane" class="query-pane active">
+                <input type="date" id="singleDate" title="选择日期" />
+              </div>
+              <div id="rangePane" class="query-pane">
+                <input type="date" id="rangeStart" title="起始日期" />
+                <span class="range-sep">~</span>
+                <input type="date" id="rangeEnd" title="结束日期" />
+              </div>
+            </div>
+            <button id="refreshBtn" class="refresh-btn">刷新</button>
+          </div>
+          <div class="query-bar-right">
+            <label class="auto-label">自动刷新</label>
+            <select id="autoRefreshSel" class="auto-select">
+              <option value="0">关闭</option>
+              <option value="5">5秒</option>
+              <option value="15">15秒</option>
+              <option value="30">30秒</option>
+              <option value="60">60秒</option>
+            </select>
+          </div>
+        </div>
+
+        <p id="meta" class="meta">尚未刷新数据</p>
+        <div id="error" class="error" hidden></div>
+
+        <div class="info-bar">
+          <button class="info-btn" id="btnSeats">用户 &amp; Team 信息</button>
+          <button class="info-btn" id="btnBillingSummary">整体账单汇总</button>
+          <button class="info-btn" id="btnModels">模型使用排行</button>
+        </div>
+
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th data-sort="user">用户 <span class="sort-arrow"></span></th>
+                <th data-sort="team">Team <span class="sort-arrow"></span></th>
+                <th data-sort="requests">请求量 <span class="sort-arrow"></span></th>
+                <th data-sort="percentage">Premium requests(%) <span class="sort-arrow"></span></th>
+                <th data-sort="amount">金额(USD) <span class="sort-arrow"></span></th>
+              </tr>
+            </thead>
+            <tbody id="tbody">
+              <tr>
+                <td colspan="5" class="empty">暂无数据，请先点击"刷新"。</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+    </main>
+
+    <!-- Modal overlay -->
+    <div id="modal" class="modal-overlay">
+      <div class="modal-card">
+        <div class="modal-header">
+          <h2 id="modalTitle"></h2>
+          <button id="modalClose" class="modal-close">&times;</button>
+        </div>
+        <div id="modalBody" class="modal-body"></div>
+      </div>
+    </div>
+
+    <script src="./script.js"></script>
+  </body>
+</html>
