@@ -244,8 +244,8 @@ async function fetchCopilotSeats(enterprise) {
   return seats;
 }
 
-async function ensureSeatsData() {
-  if (teamCache.fetchedAt) return;
+async function ensureSeatsData(forceRefresh = false) {
+  if (!forceRefresh && teamCache.fetchedAt) return;
   try {
     const endpoint = buildEndpoint();
     if (endpoint.kind !== "enterprise") return;
@@ -529,9 +529,11 @@ app.post("/api/usage/refresh", async (req, res) => {
   }
 });
 
-app.get("/api/seats", async (_req, res) => {
+app.get("/api/seats", async (req, res) => {
   try {
-    await ensureSeatsData();
+    const shouldRefresh = String(req.query.refresh || "").toLowerCase();
+    const forceRefresh = shouldRefresh === "1" || shouldRefresh === "true";
+    await ensureSeatsData(forceRefresh);
     res.json({
       ok: true,
       fetchedAt: teamCache.fetchedAt,

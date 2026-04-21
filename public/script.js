@@ -226,6 +226,15 @@ function openModal(title, html) {
 }
 function closeModal() { modal.classList.remove("open"); }
 
+async function forceRefreshSeatsCache() {
+  var resp = await fetch("/api/seats?refresh=1");
+  var data = await resp.json();
+  if (!resp.ok || !data.ok) {
+    throw new Error((data && data.message) || "刷新用户席位失败");
+  }
+  return data;
+}
+
 modalClose.addEventListener("click", closeModal);
 modal.addEventListener("click", function (e) {
   if (e.target === modal) closeModal();
@@ -281,11 +290,9 @@ function modalSortableTable(headers, rows, defaultSortKey, defaultAsc) {
 btnSeats.addEventListener("click", async function () {
   openModal("\u7528\u6237 & Team \u4fe1\u606f", '<div class="loading">\u52a0\u8f7d\u4e2d...</div>');
   try {
+    var seatsData = await forceRefreshSeatsCache();
     var teamsResp = await fetch("/api/enterprise-teams");
     var teamsData = await teamsResp.json();
-    var seatsResp = await fetch("/api/seats");
-    var seatsData = await seatsResp.json();
-    if (!seatsData.ok) throw new Error(seatsData.message);
 
     var html = "";
 
@@ -412,6 +419,7 @@ btnSeats.addEventListener("click", async function () {
 btnBillingSummary.addEventListener("click", async function () {
   openModal("\u6574\u4f53\u8d26\u5355\u6c47\u603b", '<div class="loading">\u52a0\u8f7d\u4e2d...</div>');
   try {
+    await forceRefreshSeatsCache();
     var resp = await fetch("/api/billing/summary");
     var data = await resp.json();
     if (!data.ok) throw new Error(data.message);
@@ -479,6 +487,7 @@ btnBillingSummary.addEventListener("click", async function () {
 btnModels.addEventListener("click", async function () {
   openModal("\u6a21\u578b\u4f7f\u7528\u6392\u884c", '<div class="loading">\u52a0\u8f7d\u4e2d...</div>');
   try {
+    await forceRefreshSeatsCache();
     var now = new Date();
     var year = now.getFullYear();
     var month = now.getMonth() + 1;
