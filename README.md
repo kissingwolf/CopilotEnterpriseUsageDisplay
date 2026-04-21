@@ -22,6 +22,9 @@ public/
   index.html        页面结构
   script.js         前端交互、排序、模态框
   styles.css        样式
+deploy/
+  copilot-dashboard.service   systemd 服务单元
+  nginx-copilot-dashboard.conf  Nginx 反向代理配置
 .env                配置（不入库）
 .env.example        配置模板
 ```
@@ -47,7 +50,7 @@ public/
 
 ```bash
 git clone <repo-url>
-cd Copilot模型用量展示
+cd CopilotEnterpriseUsageDisplay
 npm install
 ```
 
@@ -62,8 +65,6 @@ cp .env.example .env
 ```env
 GITHUB_TOKEN=ghp_xxxxxxxxxxxx
 ENTERPRISE_SLUG=YourEnterprise
-BILLING_YEAR=2026
-BILLING_MONTH=4
 PRODUCT=Copilot
 ```
 
@@ -94,6 +95,64 @@ npm run dev
 | `MODEL` | 否 | 可选，按模型过滤 |
 | `GITHUB_API_BASE` | 否 | API 地址，默认 `https://api.github.com`（GHE.com 需替换） |
 | `PORT` | 否 | 服务端口，默认 `3000` |
+
+## Ubuntu 22.04 部署
+
+### 1. 安装 Node.js 18
+
+```bash
+curl -fsSL https://deb.nodesource.com/setup_18.x | sudo -E bash -
+sudo apt-get install -y nodejs
+node -v  # 确认 >= 18
+```
+
+### 2. 部署应用代码
+
+```bash
+sudo mkdir -p /opt/copilot-dashboard
+sudo cp -r ./* /opt/copilot-dashboard/
+sudo cp .env /opt/copilot-dashboard/.env
+cd /opt/copilot-dashboard
+sudo npm install --production
+sudo chown -R www-data:www-data /opt/copilot-dashboard
+```
+
+### 3. 配置 systemd 开机自启
+
+```bash
+sudo cp deploy/copilot-dashboard.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable copilot-dashboard   # 开机自启
+sudo systemctl start copilot-dashboard    # 立即启动
+```
+
+常用管理命令：
+
+```bash
+sudo systemctl status copilot-dashboard   # 查看状态
+sudo systemctl restart copilot-dashboard  # 重启
+sudo journalctl -u copilot-dashboard -f   # 实时日志
+```
+
+### 4. 配置 Nginx 反向代理（80 → 3000）
+
+```bash
+sudo apt-get install -y nginx
+sudo cp deploy/nginx-copilot-dashboard.conf /etc/nginx/sites-available/copilot-dashboard
+sudo ln -sf /etc/nginx/sites-available/copilot-dashboard /etc/nginx/sites-enabled/
+sudo rm -f /etc/nginx/sites-enabled/default   # 移除默认站点
+sudo nginx -t                                 # 测试配置
+sudo systemctl reload nginx
+```
+
+部署完成后，通过 `http://<服务器IP>` 即可访问仪表盘。
+
+### 部署文件说明
+
+| 文件 | 说明 |
+|------|------|
+| `deploy/copilot-dashboard.service` | systemd 服务单元，以 `www-data` 用户运行，异常自动重启 |
+| `deploy/nginx-copilot-dashboard.conf` | Nginx 反向代理，将 80 端口转发到 Node.js 的 3000 端口 |
 
 ## 费用计算逻辑
 
