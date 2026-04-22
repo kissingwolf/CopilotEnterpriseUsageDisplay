@@ -266,8 +266,10 @@ async function ensureSeatsData(forceRefresh = false) {
   }
 }
 
+const INCLUDED_QUOTA = Number(requiredEnv("INCLUDED_QUOTA")) || 300;
+
 const PLAN_CONFIG = {
-  business:    { quota: 300,  baseCost: 19, overagePrice: 0.04 },
+  business:    { quota: INCLUDED_QUOTA, baseCost: 19, overagePrice: 0.04 },
   enterprise:  { quota: 1000, baseCost: 39, overagePrice: 0.04 },
 };
 
@@ -369,6 +371,7 @@ app.get("/api/usage", (_req, res) => {
     dateLabel: state.dateLabel || "",
     queryMode: state.queryMode || "default",
     ranking: state.ranking,
+    includedQuota: INCLUDED_QUOTA,
   });
 });
 
@@ -520,6 +523,7 @@ app.post("/api/usage/refresh", async (req, res) => {
       dateLabel: state.dateLabel,
       queryMode: state.queryMode,
       ranking: state.ranking,
+      includedQuota: INCLUDED_QUOTA,
     });
   } catch (error) {
     res.status(500).json({

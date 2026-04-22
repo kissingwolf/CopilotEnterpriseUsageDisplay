@@ -22,6 +22,7 @@ var activeMode = "single";
 var currentData = null;
 var sortKey = "requests";
 var sortAsc = false;
+var includedQuota = 300;
 
 /* ── Helpers ── */
 function todayStr() {
@@ -106,6 +107,7 @@ function render(data) {
   var rows = Array.isArray(currentData.ranking) ? currentData.ranking : [];
   var isSingle = currentData.queryMode === "single";
   var colCount = isSingle ? 6 : 5;
+  if (currentData.includedQuota) includedQuota = currentData.includedQuota;
 
   meta.textContent =
     "\u6570\u636e\u6e90: " + (currentData.source || "-") +
@@ -126,7 +128,7 @@ function render(data) {
     theadTr.innerHTML =
       '<th data-sort="user">\u7528\u6237 <span class="sort-arrow"></span></th>' +
       '<th data-sort="team">Team <span class="sort-arrow"></span></th>' +
-      '<th data-sort="requests">\u8bf7\u6c42\u91cf <span class="sort-arrow"></span></th>' +
+      '<th data-sort="requests">\u672c\u5468\u671f\u8bf7\u6c42\u91cf <span class="sort-arrow"></span></th>' +
       '<th data-sort="percentage">Premium requests(%) <span class="sort-arrow"></span></th>' +
       '<th data-sort="amount">\u91d1\u989d(USD) <span class="sort-arrow"></span></th>';
   }
@@ -147,7 +149,7 @@ function render(data) {
         "<td>" + escapeHtml(row.user) + "</td>" +
         "<td>" + escapeHtml(row.team || "-") + "</td>" +
         "<td>" + row.requests + "</td>" +
-        "<td>" + (row.cycleRequests != null ? row.cycleRequests : "-") + "</td>" +
+        "<td>" + buildCycleBar(row.cycleRequests, includedQuota) + "</td>" +
         "<td>" + row.percentage.toFixed(2) + "%</td>" +
         "<td>" + row.amount.toFixed(4) + "</td>" +
         "</tr>";
@@ -157,13 +159,26 @@ function render(data) {
       return "<tr>" +
         "<td>" + escapeHtml(row.user) + "</td>" +
         "<td>" + escapeHtml(row.team || "-") + "</td>" +
-        "<td>" + row.requests + "</td>" +
+        "<td>" + buildCycleBar(row.requests, includedQuota) + "</td>" +
         "<td>" + row.percentage.toFixed(2) + "%</td>" +
         "<td>" + row.amount.toFixed(4) + "</td>" +
         "</tr>";
     }).join("");
   }
   updateSortArrows();
+}
+
+/* ── Cycle requests progress bar ── */
+function buildCycleBar(value, quota) {
+  if (value == null) return "-";
+  var ratio = quota > 0 ? value / quota : 0;
+  var pct = Math.min(ratio * 100, 100);
+  var level = ratio >= 1 ? "level-danger" : ratio >= 0.75 ? "level-warn" : "level-normal";
+  var overTag = ratio > 1 ? ' <span class="cycle-bar-over">(超额)</span>' : '';
+  return '<div class="cycle-bar">' +
+    '<span class="cycle-bar-label">' + value + '/' + quota + overTag + '</span>' +
+    '<div class="cycle-bar-track"><div class="cycle-bar-fill ' + level + '" style="width:' + pct.toFixed(1) + '%"></div></div>' +
+    '</div>';
 }
 
 /* ── Build refresh body ── */
