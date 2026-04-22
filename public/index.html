@@ -16,14 +16,14 @@
         <div class="query-bar">
           <div class="query-bar-left">
             <div class="query-tabs">
-              <button class="tab active" data-mode="single">按日期查询</button>
-              <button class="tab" data-mode="range">按日期范围查询</button>
+              <button class="tab" data-mode="single">按日期查询</button>
+              <button class="tab active" data-mode="range">按日期范围查询</button>
             </div>
             <div class="query-inputs">
-              <div id="singlePane" class="query-pane active">
+              <div id="singlePane" class="query-pane">
                 <input type="date" id="singleDate" title="选择日期" />
               </div>
-              <div id="rangePane" class="query-pane">
+              <div id="rangePane" class="query-pane active">
                 <input type="date" id="rangeStart" title="起始日期" />
                 <span class="range-sep">~</span>
                 <input type="date" id="rangeEnd" title="结束日期" />
@@ -50,6 +50,16 @@
           <button class="info-btn" id="btnSeats">用户 &amp; Team 信息</button>
           <button class="info-btn" id="btnBillingSummary">整体账单汇总</button>
           <button class="info-btn" id="btnModels">模型使用排行</button>
+          <div class="info-bar-spacer"></div>
+          <div class="team-filter" id="teamFilter">
+            <button class="team-filter-btn" id="teamFilterBtn">Team 筛选 ▾</button>
+            <div class="team-filter-dropdown" id="teamFilterDropdown">
+              <label class="team-filter-item team-filter-all">
+                <input type="checkbox" id="teamFilterAll" checked /> 全选
+              </label>
+              <div class="team-filter-list" id="teamFilterList"></div>
+            </div>
+          </div>
         </div>
 
         <div class="table-wrap">

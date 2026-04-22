@@ -16,13 +16,18 @@ var modalClose = document.getElementById("modalClose");
 var btnSeats = document.getElementById("btnSeats");
 var btnBillingSummary = document.getElementById("btnBillingSummary");
 var btnModels = document.getElementById("btnModels");
+var teamFilterBtn = document.getElementById("teamFilterBtn");
+var teamFilterDropdown = document.getElementById("teamFilterDropdown");
+var teamFilterAll = document.getElementById("teamFilterAll");
+var teamFilterList = document.getElementById("teamFilterList");
 
 /* ── State ── */
-var activeMode = "single";
+var activeMode = "range";
 var currentData = null;
 var sortKey = "requests";
 var sortAsc = false;
 var includedQuota = 300;
+var selectedTeams = null; /* null = all selected */
 
 /* ── Helpers ── */
 function todayStr() {
@@ -109,6 +114,17 @@ function render(data) {
   var colCount = isSingle ? 6 : 5;
   if (currentData.includedQuota) includedQuota = currentData.includedQuota;
 
+  /* Build team filter checkboxes */
+  rebuildTeamFilter(rows);
+
+  /* Apply team filter */
+  if (selectedTeams) {
+    rows = rows.filter(function (r) {
+      var t = (r.team || "-").split(",");
+      return t.some(function (s) { return selectedTeams.has(s.trim()); });
+    });
+  }
+
   meta.textContent =
     "\u6570\u636e\u6e90: " + (currentData.source || "-") +
     (currentData.dateLabel ? " | \u67e5\u8be2: " + currentData.dateLabel : "") +
@@ -167,6 +183,79 @@ function render(data) {
   }
   updateSortArrows();
 }
+
+/* ── Team filter ── */
+var allTeams = [];
+
+function rebuildTeamFilter(rows) {
+  var teamSet = new Set();
+  rows.forEach(function (r) {
+    var t = (r.team || "-").split(",");
+    t.forEach(function (s) { teamSet.add(s.trim()); });
+  });
+  var teams = Array.from(teamSet).sort();
+  if (JSON.stringify(teams) === JSON.stringify(allTeams)) return;
+  allTeams = teams;
+
+  teamFilterList.innerHTML = teams.map(function (team) {
+    var checked = !selectedTeams || selectedTeams.has(team) ? "checked" : "";
+    return '<label class="team-filter-item">' +
+      '<input type="checkbox" value="' + escapeHtml(team) + '" ' + checked + ' /> ' +
+      escapeHtml(team) + '</label>';
+  }).join("");
+
+  updateAllCheckbox();
+}
+
+function getCheckedTeams() {
+  var boxes = teamFilterList.querySelectorAll('input[type="checkbox"]');
+  var checked = [];
+  boxes.forEach(function (cb) { if (cb.checked) checked.push(cb.value); });
+  return checked;
+}
+
+function updateAllCheckbox() {
+  var boxes = teamFilterList.querySelectorAll('input[type="checkbox"]');
+  var total = boxes.length;
+  var checked = getCheckedTeams().length;
+  teamFilterAll.checked = checked === total;
+  teamFilterAll.indeterminate = checked > 0 && checked < total;
+  teamFilterBtn.textContent = checked === total ? "Team \u7b5b\u9009 \u25be" : "Team \u7b5b\u9009 (" + checked + ") \u25be";
+  teamFilterBtn.classList.toggle("active", checked < total);
+}
+
+function applyTeamFilter() {
+  var checked = getCheckedTeams();
+  if (checked.length === allTeams.length) {
+    selectedTeams = null;
+  } else {
+    selectedTeams = new Set(checked);
+  }
+  updateAllCheckbox();
+  render();
+}
+
+teamFilterBtn.addEventListener("click", function (e) {
+  e.stopPropagation();
+  teamFilterDropdown.classList.toggle("open");
+});
+
+teamFilterAll.addEventListener("change", function () {
+  var boxes = teamFilterList.querySelectorAll('input[type="checkbox"]');
+  var state = teamFilterAll.checked;
+  boxes.forEach(function (cb) { cb.checked = state; });
+  applyTeamFilter();
+});
+
+teamFilterList.addEventListener("change", function () {
+  applyTeamFilter();
+});
+
+document.addEventListener("click", function (e) {
+  if (!e.target.closest("#teamFilter")) {
+    teamFilterDropdown.classList.remove("open");
+  }
+});
 
 /* ── Cycle requests progress bar ── */
 function buildCycleBar(value, quota) {

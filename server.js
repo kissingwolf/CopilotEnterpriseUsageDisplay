@@ -19,6 +19,9 @@ const state = {
   queryMode: "default",
 };
 
+const CACHE_TTL = (Number(requiredEnv("CACHE_TTL")) || 300) * 1000; // ms
+const refreshCache = new Map(); // key -> { ts, result }
+
 const teamCache = {
   userTeamMap: {},
   seatsRaw: [],
@@ -399,6 +402,12 @@ function enumerateDays(startStr, endStr) {
 }
 
 async function refreshForDateOverride(dateOverride) {
+  const cacheKey = JSON.stringify(dateOverride || {});
+  const cached = refreshCache.get(cacheKey);
+  if (cached && Date.now() - cached.ts < CACHE_TTL) {
+    return cached.result;
+  }
+
   const { data, endpoint } = await fetchUsageFromGitHub(dateOverride);
   let ranking = aggregateRanking(data);
   let mode = "direct";
@@ -408,12 +417,15 @@ async function refreshForDateOverride(dateOverride) {
     mode = "per-user-fallback";
   }
 
-  return {
+  const result = {
     ranking,
     mode,
     rawItemsCount: Array.isArray(data?.usageItems) ? data.usageItems.length : 0,
     source: endpoint.scope,
   };
+
+  refreshCache.set(cacheKey, { ts: Date.now(), result });
+  return result;
 }
 
 function mergeRankings(list) {

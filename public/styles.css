@@ -35,7 +35,7 @@ body {
   border: 1px solid var(--line);
   border-radius: 20px;
   box-shadow: 0 10px 30px rgba(30, 42, 47, 0.08);
-  overflow: hidden;
+  overflow: visible;
 }
 
 .topbar {
@@ -303,6 +303,89 @@ tbody tr:hover {
   border-color: var(--accent);
   color: var(--accent);
   background: #f0faf5;
+}
+
+.info-bar-spacer {
+  flex: 1;
+}
+
+/* Team filter dropdown */
+.team-filter {
+  position: relative;
+}
+
+.team-filter-btn {
+  padding: 8px 16px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--card);
+  color: var(--ink);
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  white-space: nowrap;
+}
+
+.team-filter-btn:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.team-filter-btn.active {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: #f0faf5;
+}
+
+.team-filter-dropdown {
+  display: none;
+  position: absolute;
+  right: 0;
+  top: calc(100% + 6px);
+  min-width: 220px;
+  max-height: 320px;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  box-shadow: 0 8px 24px rgba(30, 42, 47, 0.12);
+  z-index: 100;
+  overflow: hidden;
+}
+
+.team-filter-dropdown.open {
+  display: block;
+}
+
+.team-filter-all {
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--line);
+}
+
+.team-filter-list {
+  overflow-y: auto;
+  max-height: 260px;
+}
+
+.team-filter-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px;
+  font-size: 13px;
+  cursor: pointer;
+  transition: background 0.1s;
+}
+
+.team-filter-item:hover {
+  background: #f0faf5;
+}
+
+.team-filter-item input[type="checkbox"] {
+  accent-color: var(--accent);
+  width: 15px;
+  height: 15px;
+  cursor: pointer;
 }
 
 /* Modal */

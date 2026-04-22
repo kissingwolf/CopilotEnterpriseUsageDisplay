@@ -93,6 +93,8 @@ npm run dev
 | `BILLING_DAY` | 否 | 可选，指定具体日期 |
 | `PRODUCT` | 否 | 产品过滤，默认 `Copilot` |
 | `MODEL` | 否 | 可选，按模型过滤 |
+| `INCLUDED_QUOTA` | 否 | 每用户每周期包含请求配额，默认 `300`，用于进度条基线和百分比计算 |
+| `CACHE_TTL` | 否 | API 响应缓存时长（秒），默认 `300`（5 分钟），缓存期内相同查询直接返回缓存 |
 | `GITHUB_API_BASE` | 否 | API 地址，默认 `https://api.github.com`（GHE.com 需替换） |
 | `PORT` | 否 | 服务端口，默认 `3000` |
 
