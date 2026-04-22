@@ -758,6 +758,203 @@ app.post("/api/teams/refresh", async (_req, res) => {
   }
 });
 
+async function fetchCostCenterBudgetMap(enterprise) {
+  const data = await githubGetJson(
+    `/enterprises/${encodeURIComponent(enterprise)}/settings/billing/budgets`,
+    new URLSearchParams({ scope: "cost_center", per_page: "100", page: "1" })
+  );
+
+  const budgets = Array.isArray(data?.budgets) ? data.budgets : [];
+  const byName = new Map();
+
+  for (const budget of budgets) {
+    const scope = String(budget?.budget_scope || "").toLowerCase();
+    if (scope !== "cost_center") continue;
+    const name = String(budget?.budget_entity_name || "").trim();
+    if (!name) continue;
+    const amount = toNumber(budget?.budget_amount);
+    const key = name.toLowerCase();
+    byName.set(key, (byName.get(key) || 0) + amount);
+  }
+
+  return byName;
+}
+
+function getBillingYearMonthForCostCenter() {
+  const now = new Date();
+  return {
+    year: requiredEnv("BILLING_YEAR") || String(now.getFullYear()),
+    month: requiredEnv("BILLING_MONTH") || String(now.getMonth() + 1),
+  };
+}
+
+function summarizeUsageItemsAmount(payload) {
+  const usageItems = Array.isArray(payload?.usageItems) ? payload.usageItems : [];
+  let spent = 0;
+  for (const item of usageItems) {
+    spent += toNumber(item.netAmount) || toNumber(item.grossAmount) || toNumber(item.amount);
+  }
+  return Math.round(spent * 10000) / 10000;
+}
+
+async function fetchCostCenterSpentMap(enterprise, costCenters) {
+  const byName = new Map();
+  if (!Array.isArray(costCenters) || costCenters.length === 0) return byName;
+
+  const { year, month } = getBillingYearMonthForCostCenter();
+  const chunkSize = 6;
+
+  for (let i = 0; i < costCenters.length; i += chunkSize) {
+    const chunk = costCenters.slice(i, i + chunkSize);
+    const chunkResults = await Promise.all(
+      chunk.map(async (cc) => {
+        const ccId = cc?.id;
+        const ccName = String(cc?.name || "").trim();
+        if (!ccId || !ccName) return;
+
+        try {
+          const params = new URLSearchParams();
+          params.set("year", String(year));
+          params.set("month", String(month));
+          params.set("cost_center_id", String(ccId));
+
+          const usage = await githubGetJson(
+            `/enterprises/${encodeURIComponent(enterprise)}/settings/billing/usage/summary`,
+            params
+          );
+
+          byName.set(ccName.toLowerCase(), summarizeUsageItemsAmount(usage));
+        } catch {
+          byName.set(ccName.toLowerCase(), null);
+        }
+      })
+    );
+    void chunkResults;
+  }
+
+  return byName;
+}
+
+app.get("/api/cost-centers", async (req, res) => {
+  try {
+    const endpoint = buildEndpoint();
+    if (endpoint.kind !== "enterprise") {
+      throw new Error("Cost center API 仅支持 enterprise 模式。请设置 ENTERPRISE_SLUG。");
+    }
+
+    const stateFilter = String(req.query.state || "").toLowerCase();
+    const params = new URLSearchParams();
+    if (stateFilter === "active" || stateFilter === "deleted") {
+      params.set("state", stateFilter);
+    }
+
+    const data = await githubGetJson(
+      `/enterprises/${encodeURIComponent(endpoint.enterprise)}/settings/billing/cost-centers`,
+      params
+    );
+
+    const costCenters = Array.isArray(data?.costCenters) ? data.costCenters : [];
+    const [budgetByName, spentByName] = await Promise.all([
+      fetchCostCenterBudgetMap(endpoint.enterprise),
+      fetchCostCenterSpentMap(endpoint.enterprise, costCenters),
+    ]);
+
+    const normalized = costCenters.map((cc) => {
+      const resources = Array.isArray(cc.resources) ? cc.resources : [];
+      const nameKey = String(cc.name || "").trim().toLowerCase();
+      return {
+        id: cc.id || "",
+        name: cc.name || "-",
+        budgetAmount: budgetByName.get(nameKey) ?? null,
+        spentAmount: spentByName.get(nameKey) ?? null,
+        state: cc.state || "-",
+        azureSubscription: cc.azure_subscription || "",
+        resources,
+      };
+    });
+
+    res.json({
+      ok: true,
+      fetchedAt: new Date().toISOString(),
+      enterprise: endpoint.enterprise,
+      total: normalized.length,
+      costCenters: normalized,
+    });
+  } catch (error) {
+    res.status(500).json({
+      ok: false,
+      message: error instanceof Error ? error.message : "Unknown error",
+    });
+  }
+});
+
+app.get("/api/cost-centers/by-name/:name", async (req, res) => {
+  try {
+    const endpoint = buildEndpoint();
+    if (endpoint.kind !== "enterprise") {
+      throw new Error("Cost center API 仅支持 enterprise 模式。请设置 ENTERPRISE_SLUG。");
+    }
+
+    const rawName = req.params.name || "";
+    const targetName = decodeURIComponent(rawName).trim();
+    if (!targetName) {
+      throw new Error("缺少 cost center 名称。");
+    }
+
+    const data = await githubGetJson(
+      `/enterprises/${encodeURIComponent(endpoint.enterprise)}/settings/billing/cost-centers`
+    );
+
+    const costCenters = Array.isArray(data?.costCenters) ? data.costCenters : [];
+    const found = costCenters.find((cc) => {
+      const name = typeof cc?.name === "string" ? cc.name.trim() : "";
+      return name.toLowerCase() === targetName.toLowerCase();
+    });
+
+    if (!found) {
+      res.status(404).json({
+        ok: false,
+        message: `未找到名为 \"${targetName}\" 的 cost center。`,
+      });
+      return;
+    }
+
+    const [budgetByName, spentByName] = await Promise.all([
+      fetchCostCenterBudgetMap(endpoint.enterprise),
+      fetchCostCenterSpentMap(endpoint.enterprise, [found]),
+    ]);
+
+    const nameKey = String(found.name || "").trim().toLowerCase();
+    res.json({
+      ok: true,
+      fetchedAt: new Date().toISOString(),
+      enterprise: endpoint.enterprise,
+      costCenter: {
+        id: found.id || "",
+        name: found.name || "-",
+        budgetAmount: budgetByName.get(nameKey) ?? null,
+        spentAmount: spentByName.get(nameKey) ?? null,
+        state: found.state || "-",
+        azureSubscription: found.azure_subscription || "",
+        resources: Array.isArray(found.resources) ? found.resources : [],
+      },
+    });
+  } catch (error) {
+    res.status(500).json({
+      ok: false,
+      message: error instanceof Error ? error.message : "Unknown error",
+    });
+  }
+});
+
+app.get("/costcenter", (_req, res) => {
+  res.sendFile(path.join(__dirname, "public", "costcenter.html"));
+});
+
+app.get("/costcenter/:name", (_req, res) => {
+  res.sendFile(path.join(__dirname, "public", "costcenter.html"));
+});
+
 app.get("*", (_req, res) => {
   res.sendFile(path.join(__dirname, "public", "index.html"));
 });

@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Cost Center 管理</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="page">
+      <section class="card">
+        <header class="topbar topbar-row">
+          <h1 id="pageTitle">Cost Center 管理</h1>
+          <a class="back-link" href="/">返回用量看板</a>
+        </header>
+
+        <div class="query-bar">
+          <div class="query-bar-left">
+            <label for="stateSel" class="auto-label">状态筛选</label>
+            <select id="stateSel" class="auto-select">
+              <option value="">全部</option>
+              <option value="active" selected>active</option>
+              <option value="deleted">deleted</option>
+            </select>
+            <button id="refreshBtn" class="refresh-btn">刷新</button>
+          </div>
+        </div>
+
+        <p id="meta" class="meta">尚未刷新数据</p>
+        <div id="error" class="error" hidden></div>
+
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>名称</th>
+                <th>预算</th>
+                <th>状态</th>
+                <th>用户数量</th>
+              </tr>
+            </thead>
+            <tbody id="tbody">
+              <tr>
+                <td colspan="4" class="empty">暂无数据，请点击"刷新"。</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+    </main>
+
+    <script src="./costcenter.js"></script>
+  </body>
+</html>
