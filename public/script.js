@@ -132,7 +132,10 @@ function render(data) {
   }
 
   if (!rows.length) {
-    tbody.innerHTML = '<tr><td colspan="' + colCount + '" class="empty">\u6682\u65e0\u6570\u636e\uff0c\u8bf7\u5148\u70b9\u51fb\u201c\u5237\u65b0\u201d\u3002</td></tr>';
+    var emptyMsg = currentData.fetchedAt
+      ? "\u8be5\u65e5\u671f\u6682\u65e0\u7528\u91cf\u6570\u636e\uff08\u8d26\u5355\u6570\u636e\u901a\u5e38\u6709 24\uff5e48 \u5c0f\u65f6\u5ef6\u8fdf\uff09\u3002"
+      : "\u6682\u65e0\u6570\u636e\uff0c\u8bf7\u5148\u70b9\u51fb\u201c\u5237\u65b0\u201d\u3002";
+    tbody.innerHTML = '<tr><td colspan="' + colCount + '" class="empty">' + emptyMsg + '</td></tr>';
     updateSortArrows();
     return;
   }
