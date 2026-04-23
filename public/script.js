@@ -20,6 +20,7 @@ var teamFilterBtn = document.getElementById("teamFilterBtn");
 var teamFilterDropdown = document.getElementById("teamFilterDropdown");
 var teamFilterAll = document.getElementById("teamFilterAll");
 var teamFilterList = document.getElementById("teamFilterList");
+var paginationEl = document.getElementById("pagination");
 
 /* ── State ── */
 var activeMode = "range";
@@ -29,7 +30,9 @@ var sortAsc = false;
 var includedQuota = 300;
 var selectedTeams = null; /* null = all selected */
 var latestMetaText = "尚未刷新数据";
-var RENDER_CHUNK_SIZE = 40;
+var PAGE_SIZE = 15;
+var MAX_VISIBLE_PAGES = 5;
+var currentPage = 1;
 var CACHE_PREFIX = "copilot-dashboard:usage:";
 var CACHE_TTL_MS = 5 * 60 * 1000;
 
@@ -199,24 +202,89 @@ function buildMainRowHtml(row, isSingle) {
     "</tr>";
 }
 
-function renderRowsInChunks(sortedRows, isSingle) {
-  tbody.innerHTML = "";
-  var index = 0;
+function renderRows(sortedRows, isSingle) {
+  var totalPages = Math.max(1, Math.ceil(sortedRows.length / PAGE_SIZE));
+  if (currentPage > totalPages) currentPage = totalPages;
+  var start = (currentPage - 1) * PAGE_SIZE;
+  var end = Math.min(start + PAGE_SIZE, sortedRows.length);
+  var html = "";
+  for (var i = start; i < end; i += 1) {
+    html += buildMainRowHtml(sortedRows[i], isSingle);
+  }
+  tbody.innerHTML = html;
+  renderPagination(sortedRows.length, totalPages);
+}
 
-  function pushChunk() {
-    var end = Math.min(index + RENDER_CHUNK_SIZE, sortedRows.length);
-    var html = "";
-    for (; index < end; index += 1) {
-      html += buildMainRowHtml(sortedRows[index], isSingle);
-    }
-    tbody.insertAdjacentHTML("beforeend", html);
-    if (index < sortedRows.length) {
-      requestAnimationFrame(pushChunk);
+function renderPagination(total, totalPages) {
+  if (totalPages <= 1) {
+    paginationEl.innerHTML = "";
+    paginationEl.classList.add("hidden");
+    return;
+  }
+  paginationEl.classList.remove("hidden");
+
+  var html = "";
+
+  /* Prev button */
+  if (currentPage > 1) {
+    html += '<button class="page-btn page-prev" data-page="' + (currentPage - 1) + '">上一页</button>';
+  }
+
+  /* Page numbers */
+  var pages = buildVisiblePages(totalPages);
+  for (var i = 0; i < pages.length; i += 1) {
+    var p = pages[i];
+    if (p === "...") {
+      html += '<span class="page-ellipsis">…</span>';
+    } else {
+      var cls = p === currentPage ? "page-btn active" : "page-btn";
+      html += '<button class="' + cls + '" data-page="' + p + '">' + p + '</button>';
     }
   }
 
-  pushChunk();
+  /* Next button */
+  if (currentPage < totalPages) {
+    html += '<button class="page-btn page-next" data-page="' + (currentPage + 1) + '">下一页</button>';
+  }
+
+  paginationEl.innerHTML = html;
 }
+
+function buildVisiblePages(totalPages) {
+  var pages = [];
+  if (totalPages <= MAX_VISIBLE_PAGES + 2) {
+    for (var i = 1; i <= totalPages; i += 1) pages.push(i);
+    return pages;
+  }
+
+  /* Determine window around currentPage */
+  var half = Math.floor(MAX_VISIBLE_PAGES / 2);
+  var start = currentPage - half;
+  var end = currentPage + half;
+
+  if (start < 1) { start = 1; end = MAX_VISIBLE_PAGES; }
+  if (end > totalPages) { end = totalPages; start = totalPages - MAX_VISIBLE_PAGES + 1; }
+
+  pages.push(1);
+  if (start > 2) pages.push("...");
+  for (var j = start; j <= end; j += 1) {
+    if (j !== 1 && j !== totalPages) pages.push(j);
+  }
+  if (end < totalPages - 1) pages.push("...");
+  pages.push(totalPages);
+  return pages;
+}
+
+/* Pagination click handler */
+paginationEl.addEventListener("click", function (e) {
+  var btn = e.target.closest(".page-btn");
+  if (!btn) return;
+  var page = parseInt(btn.dataset.page, 10);
+  if (page && page !== currentPage) {
+    currentPage = page;
+    render();
+  }
+});
 
 document.querySelector("table thead").addEventListener("click", function (e) {
   var th = e.target.closest("th[data-sort]");
@@ -224,6 +292,7 @@ document.querySelector("table thead").addEventListener("click", function (e) {
   var key = th.dataset.sort;
   if (sortKey === key) { sortAsc = !sortAsc; }
   else { sortKey = key; sortAsc = (key === "user" || key === "team"); }
+  currentPage = 1;
   render();
 });
 
@@ -278,12 +347,14 @@ function render(data) {
       ? "\u8be5\u65e5\u671f\u6682\u65e0\u7528\u91cf\u6570\u636e\uff08\u8d26\u5355\u6570\u636e\u901a\u5e38\u6709 24\uff5e48 \u5c0f\u65f6\u5ef6\u8fdf\uff09\u3002"
       : "\u6682\u65e0\u6570\u636e\uff0c\u8bf7\u5148\u70b9\u51fb\u201c\u5237\u65b0\u201d\u3002";
     tbody.innerHTML = '<tr><td colspan="' + colCount + '" class="empty">' + emptyMsg + '</td></tr>';
+    paginationEl.innerHTML = "";
+    paginationEl.classList.add("hidden");
     updateSortArrows();
     return;
   }
 
   var sorted = sortRows(rows);
-  renderRowsInChunks(sorted, isSingle);
+  renderRows(sorted, isSingle);
   updateSortArrows();
 }
 
@@ -334,6 +405,7 @@ function applyTeamFilter() {
   } else {
     selectedTeams = new Set(checked);
   }
+  currentPage = 1;
   updateAllCheckbox();
   render();
 }
@@ -386,6 +458,7 @@ async function loadCached() {
   var key = cacheKeyForBody(initialBody);
   var cached = getCachedData(key);
   if (cached) {
+    currentPage = 1;
     render(cached);
     setMetaRefreshing(true);
     return;
@@ -416,6 +489,8 @@ async function refresh(options) {
   } else if (!currentData) {
     renderSkeletonRows(activeMode === "single" ? 6 : 5, 8);
   }
+
+  currentPage = 1;
 
   refreshBtn.disabled = true;
   var oldText = refreshBtn.textContent;
