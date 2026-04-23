@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>用户映射管理</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main class="page">
+      <section class="card">
+        <header class="topbar topbar-row">
+          <h1>用户映射管理</h1>
+          <a class="back-link" href="/">返回用量看板</a>
+        </header>
+
+        <div class="user-upload-bar">
+          <input type="file" id="fileInput" accept=".xlsx,.xls" hidden />
+          <button id="uploadBtn" class="refresh-btn">上传用户映射文件</button>
+          <span id="uploadStatus" class="upload-status"></span>
+          <button id="reloadMappingBtn" class="info-btn">重新加载映射</button>
+          <button id="reloadMembersBtn" class="info-btn">刷新成员列表</button>
+        </div>
+
+        <p id="mappingMeta" class="meta">尚未加载映射数据</p>
+        <div id="error" class="error" hidden></div>
+
+        <div class="table-wrap">
+          <table id="membersTable">
+            <thead>
+              <tr>
+                <th data-sort="login">Github 用户名 <span class="sort-arrow"></span></th>
+                <th data-sort="team">Team <span class="sort-arrow"></span></th>
+                <th data-sort="adName">AD 用户名 <span class="sort-arrow"></span></th>
+                <th data-sort="adMail">AD 邮箱 <span class="sort-arrow"></span></th>
+                <th data-sort="planType">计划 <span class="sort-arrow"></span></th>
+                <th data-sort="lastActivityAt">最后活跃 <span class="sort-arrow"></span></th>
+                <th>映射状态</th>
+              </tr>
+            </thead>
+            <tbody id="membersTbody">
+              <tr><td colspan="7" class="empty">请点击"刷新成员列表"。</td></tr>
+            </tbody>
+          </table>
+          <div class="pagination" id="pagination"></div>
+        </div>
+      </section>
+    </main>
+
+    <script src="/user.js"></script>
+  </body>
+</html>

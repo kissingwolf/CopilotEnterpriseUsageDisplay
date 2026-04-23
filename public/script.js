@@ -182,9 +182,10 @@ function sortRows(rows) {
 }
 
 function buildMainRowHtml(row, isSingle) {
+  var displayName = row.adName || row.user;
   if (isSingle) {
     return "<tr>" +
-      "<td>" + escapeHtml(row.user) + "</td>" +
+      "<td>" + escapeHtml(displayName) + "</td>" +
       "<td>" + escapeHtml(row.team || "-") + "</td>" +
       "<td>" + row.requests + "</td>" +
       "<td>" + buildCycleBar(row.cycleRequests, includedQuota) + "</td>" +
@@ -194,7 +195,7 @@ function buildMainRowHtml(row, isSingle) {
   }
 
   return "<tr>" +
-    "<td>" + escapeHtml(row.user) + "</td>" +
+    "<td>" + escapeHtml(displayName) + "</td>" +
     "<td>" + escapeHtml(row.team || "-") + "</td>" +
     "<td>" + buildCycleBar(row.requests, includedQuota) + "</td>" +
     "<td>" + row.percentage.toFixed(2) + "%</td>" +
