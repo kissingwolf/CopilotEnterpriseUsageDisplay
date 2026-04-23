@@ -19,6 +19,15 @@ const state = {
   queryMode: "default",
 };
 
+class ApiError extends Error {
+  constructor(message, statusCode = 500, extra = {}) {
+    super(message);
+    this.name = "ApiError";
+    this.statusCode = statusCode;
+    this.rateLimit = extra.rateLimit || null;
+  }
+}
+
 const CACHE_TTL = (Number(requiredEnv("CACHE_TTL")) || 300) * 1000; // ms
 const refreshCache = new Map(); // key -> { ts, result }
 
@@ -31,6 +40,18 @@ const teamCache = {
 function requiredEnv(name) {
   const value = process.env[name];
   return value && value.trim() ? value.trim() : "";
+}
+
+function writeError(res, error) {
+  const statusCode = error instanceof ApiError ? error.statusCode : 500;
+  const body = {
+    ok: false,
+    message: error instanceof Error ? error.message : "Unknown error",
+  };
+  if (error instanceof ApiError && error.rateLimit) {
+    body.rateLimit = error.rateLimit;
+  }
+  res.status(statusCode).json(body);
 }
 
 function toNumber(value) {
@@ -115,7 +136,7 @@ function buildEndpoint() {
   throw new Error("Please set ENTERPRISE_SLUG or ORG_NAME in .env");
 }
 
-async function githubGetJson(pathname, searchParams) {
+async function githubRequestJson(method, pathname, searchParams, body) {
   const token = requiredEnv("GITHUB_TOKEN");
   if (!token) {
     throw new Error("Missing GITHUB_TOKEN in .env");
@@ -126,15 +147,22 @@ async function githubGetJson(pathname, searchParams) {
   const url = `${apiBase}${pathname}${query ? `?${query}` : ""}`;
 
   const resp = await fetch(url, {
+    method,
     headers: {
       Accept: "application/vnd.github+json",
       Authorization: `Bearer ${token}`,
       "X-GitHub-Api-Version": "2026-03-10",
+      ...(body ? { "Content-Type": "application/json" } : {}),
     },
+    ...(body ? { body: JSON.stringify(body) } : {}),
   });
 
   const text = await resp.text();
   let data = null;
+  const limit = Number(resp.headers.get("x-ratelimit-limit") || 0);
+  const remaining = Number(resp.headers.get("x-ratelimit-remaining") || 0);
+  const resetEpoch = Number(resp.headers.get("x-ratelimit-reset") || 0);
+  const resetAt = resetEpoch ? new Date(resetEpoch * 1000).toISOString() : null;
 
   try {
     data = text ? JSON.parse(text) : null;
@@ -144,10 +172,42 @@ async function githubGetJson(pathname, searchParams) {
 
   if (!resp.ok) {
     const msg = data && data.message ? data.message : "GitHub API request failed";
-    throw new Error(`${resp.status} ${resp.statusText}: ${msg}`);
+    const isRateLimited =
+      resp.status === 429 ||
+      remaining === 0 ||
+      /rate limit/i.test(String(msg));
+
+    if (isRateLimited) {
+      throw new ApiError(
+        "GitHub API 速率限制已触发，请稍后再试。",
+        429,
+        {
+          rateLimit: {
+            limit,
+            remaining,
+            resetAt,
+            limitExceeded: true,
+          },
+        }
+      );
+    }
+
+    throw new ApiError(`${resp.status} ${resp.statusText}: ${msg}`, resp.status);
   }
 
   return data;
+}
+
+async function githubGetJson(pathname, searchParams) {
+  return githubRequestJson("GET", pathname, searchParams);
+}
+
+async function githubPostJson(pathname, body) {
+  return githubRequestJson("POST", pathname, undefined, body);
+}
+
+async function githubDeleteJson(pathname, body) {
+  return githubRequestJson("DELETE", pathname, undefined, body);
 }
 
 async function fetchUsageFromGitHub(dateOverride) {
@@ -538,10 +598,7 @@ app.post("/api/usage/refresh", async (req, res) => {
       includedQuota: INCLUDED_QUOTA,
     });
   } catch (error) {
-    res.status(500).json({
-      ok: false,
-      message: error instanceof Error ? error.message : "Unknown error",
-    });
+    writeError(res, error);
   }
 });
 
@@ -557,7 +614,7 @@ app.get("/api/seats", async (req, res) => {
       seats: teamCache.seatsRaw,
     });
   } catch (error) {
-    res.status(500).json({ ok: false, message: error instanceof Error ? error.message : "Unknown error" });
+    writeError(res, error);
   }
 });
 
@@ -623,7 +680,7 @@ app.get("/api/billing/summary", async (_req, res) => {
       totalEstimatedCost,
     });
   } catch (error) {
-    res.status(500).json({ ok: false, message: error instanceof Error ? error.message : "Unknown error" });
+    writeError(res, error);
   }
 });
 
@@ -670,7 +727,7 @@ app.get("/api/billing/models", async (req, res) => {
       totalAmount: Math.round(totalAmount * 10000) / 10000,
     });
   } catch (error) {
-    res.status(500).json({ ok: false, message: error instanceof Error ? error.message : "Unknown error" });
+    writeError(res, error);
   }
 });
 
@@ -704,7 +761,7 @@ app.get("/api/enterprise-teams", async (_req, res) => {
       })),
     });
   } catch (error) {
-    res.status(500).json({ ok: false, message: error instanceof Error ? error.message : "Unknown error" });
+    writeError(res, error);
   }
 });
 
@@ -729,7 +786,7 @@ app.get("/api/enterprise-teams/:teamId/members", async (req, res) => {
       })),
     });
   } catch (error) {
-    res.status(500).json({ ok: false, message: error instanceof Error ? error.message : "Unknown error" });
+    writeError(res, error);
   }
 });
 
@@ -751,11 +808,330 @@ app.post("/api/teams/refresh", async (_req, res) => {
     teamCache.fetchedAt = new Date().toISOString();
     res.json({ ok: true, fetchedAt: teamCache.fetchedAt, totalUsers: seats.length, teams: teamCache.userTeamMap });
   } catch (error) {
-    res.status(500).json({
-      ok: false,
-      message: error instanceof Error ? error.message : "Unknown error",
-    });
+    writeError(res, error);
   }
+});
+
+async function fetchCostCenterBudgetMap(enterprise) {
+  const data = await githubGetJson(
+    `/enterprises/${encodeURIComponent(enterprise)}/settings/billing/budgets`,
+    new URLSearchParams({ scope: "cost_center", per_page: "100", page: "1" })
+  );
+
+  const budgets = Array.isArray(data?.budgets) ? data.budgets : [];
+  const byName = new Map();
+
+  for (const budget of budgets) {
+    const scope = String(budget?.budget_scope || "").toLowerCase();
+    if (scope !== "cost_center") continue;
+    const name = String(budget?.budget_entity_name || "").trim();
+    if (!name) continue;
+    const amount = toNumber(budget?.budget_amount);
+    const key = name.toLowerCase();
+    byName.set(key, (byName.get(key) || 0) + amount);
+  }
+
+  return byName;
+}
+
+function getBillingYearMonthForCostCenter() {
+  const now = new Date();
+  return {
+    year: requiredEnv("BILLING_YEAR") || String(now.getFullYear()),
+    month: requiredEnv("BILLING_MONTH") || String(now.getMonth() + 1),
+  };
+}
+
+function summarizeUsageItemsAmount(payload) {
+  const usageItems = Array.isArray(payload?.usageItems) ? payload.usageItems : [];
+  let spent = 0;
+  for (const item of usageItems) {
+    spent += toNumber(item.netAmount) || toNumber(item.grossAmount) || toNumber(item.amount);
+  }
+  return Math.round(spent * 10000) / 10000;
+}
+
+async function fetchCostCenterSpentMap(enterprise, costCenters) {
+  const byName = new Map();
+  if (!Array.isArray(costCenters) || costCenters.length === 0) return byName;
+
+  const { year, month } = getBillingYearMonthForCostCenter();
+  const chunkSize = 6;
+
+  for (let i = 0; i < costCenters.length; i += chunkSize) {
+    const chunk = costCenters.slice(i, i + chunkSize);
+    const chunkResults = await Promise.all(
+      chunk.map(async (cc) => {
+        const ccId = cc?.id;
+        const ccName = String(cc?.name || "").trim();
+        if (!ccId || !ccName) return;
+
+        try {
+          const params = new URLSearchParams();
+          params.set("year", String(year));
+          params.set("month", String(month));
+          params.set("cost_center_id", String(ccId));
+
+          const usage = await githubGetJson(
+            `/enterprises/${encodeURIComponent(enterprise)}/settings/billing/usage/summary`,
+            params
+          );
+
+          byName.set(ccName.toLowerCase(), summarizeUsageItemsAmount(usage));
+        } catch {
+          byName.set(ccName.toLowerCase(), null);
+        }
+      })
+    );
+    void chunkResults;
+  }
+
+  return byName;
+}
+
+async function fetchEnterpriseTeamMembers(enterprise, teamId) {
+  const members = [];
+  let page = 1;
+  while (true) {
+    const raw = await githubGetJson(
+      `/enterprises/${encodeURIComponent(enterprise)}/teams/${teamId}/memberships`,
+      new URLSearchParams({ per_page: "100", page: String(page) })
+    );
+    const batch = Array.isArray(raw) ? raw : [];
+    for (const m of batch) {
+      if (typeof m?.login === "string" && m.login.trim()) {
+        members.push(m.login.trim());
+      }
+    }
+    if (batch.length < 100) break;
+    page += 1;
+  }
+  return members;
+}
+
+app.get("/api/cost-centers", async (req, res) => {
+  try {
+    const endpoint = buildEndpoint();
+    if (endpoint.kind !== "enterprise") {
+      throw new Error("Cost center API 仅支持 enterprise 模式。请设置 ENTERPRISE_SLUG。");
+    }
+
+    const stateFilter = String(req.query.state || "").toLowerCase();
+    const params = new URLSearchParams();
+    if (stateFilter === "active" || stateFilter === "deleted") {
+      params.set("state", stateFilter);
+    }
+
+    const data = await githubGetJson(
+      `/enterprises/${encodeURIComponent(endpoint.enterprise)}/settings/billing/cost-centers`,
+      params
+    );
+
+    const costCenters = Array.isArray(data?.costCenters) ? data.costCenters : [];
+    const [budgetByName, spentByName] = await Promise.all([
+      fetchCostCenterBudgetMap(endpoint.enterprise),
+      fetchCostCenterSpentMap(endpoint.enterprise, costCenters),
+    ]);
+
+    const normalized = costCenters.map((cc) => {
+      const resources = Array.isArray(cc.resources) ? cc.resources : [];
+      const nameKey = String(cc.name || "").trim().toLowerCase();
+      return {
+        id: cc.id || "",
+        name: cc.name || "-",
+        budgetAmount: budgetByName.get(nameKey) ?? null,
+        spentAmount: spentByName.get(nameKey) ?? null,
+        state: cc.state || "-",
+        azureSubscription: cc.azure_subscription || "",
+        resources,
+      };
+    });
+
+    res.json({
+      ok: true,
+      fetchedAt: new Date().toISOString(),
+      enterprise: endpoint.enterprise,
+      total: normalized.length,
+      costCenters: normalized,
+    });
+  } catch (error) {
+    writeError(res, error);
+  }
+});
+
+app.get("/api/cost-centers/by-name/:name", async (req, res) => {
+  try {
+    const endpoint = buildEndpoint();
+    if (endpoint.kind !== "enterprise") {
+      throw new Error("Cost center API 仅支持 enterprise 模式。请设置 ENTERPRISE_SLUG。");
+    }
+
+    const rawName = req.params.name || "";
+    const targetName = decodeURIComponent(rawName).trim();
+    if (!targetName) {
+      throw new Error("缺少 cost center 名称。");
+    }
+
+    const data = await githubGetJson(
+      `/enterprises/${encodeURIComponent(endpoint.enterprise)}/settings/billing/cost-centers`
+    );
+
+    const costCenters = Array.isArray(data?.costCenters) ? data.costCenters : [];
+    const found = costCenters.find((cc) => {
+      const name = typeof cc?.name === "string" ? cc.name.trim() : "";
+      return name.toLowerCase() === targetName.toLowerCase();
+    });
+
+    if (!found) {
+      res.status(404).json({
+        ok: false,
+        message: `未找到名为 \"${targetName}\" 的 cost center。`,
+      });
+      return;
+    }
+
+    const [budgetByName, spentByName] = await Promise.all([
+      fetchCostCenterBudgetMap(endpoint.enterprise),
+      fetchCostCenterSpentMap(endpoint.enterprise, [found]),
+    ]);
+
+    const nameKey = String(found.name || "").trim().toLowerCase();
+    res.json({
+      ok: true,
+      fetchedAt: new Date().toISOString(),
+      enterprise: endpoint.enterprise,
+      costCenter: {
+        id: found.id || "",
+        name: found.name || "-",
+        budgetAmount: budgetByName.get(nameKey) ?? null,
+        spentAmount: spentByName.get(nameKey) ?? null,
+        state: found.state || "-",
+        azureSubscription: found.azure_subscription || "",
+        resources: Array.isArray(found.resources) ? found.resources : [],
+      },
+    });
+  } catch (error) {
+    writeError(res, error);
+  }
+});
+
+app.post("/api/cost-centers/:id/add-users-from-teams", async (req, res) => {
+  try {
+    const endpoint = buildEndpoint();
+    if (endpoint.kind !== "enterprise") {
+      throw new Error("Cost center API 仅支持 enterprise 模式。请设置 ENTERPRISE_SLUG。");
+    }
+
+    const costCenterId = String(req.params.id || "").trim();
+    if (!costCenterId) throw new Error("缺少 cost center ID。");
+
+    const teamIds = Array.isArray(req.body?.teamIds)
+      ? req.body.teamIds.map((v) => String(v).trim()).filter((v) => /^\d+$/.test(v))
+      : [];
+    const dryRun = Boolean(req.body?.dryRun);
+    const removeMissingUsers = Boolean(req.body?.removeMissingUsers);
+
+    if (teamIds.length === 0) {
+      throw new Error("请至少选择一个 Team。");
+    }
+
+    const [ccList, teamsRaw] = await Promise.all([
+      githubGetJson(`/enterprises/${encodeURIComponent(endpoint.enterprise)}/settings/billing/cost-centers`),
+      githubGetJson(
+        `/enterprises/${encodeURIComponent(endpoint.enterprise)}/teams`,
+        new URLSearchParams({ per_page: "100" })
+      ),
+    ]);
+
+    const allCostCenters = Array.isArray(ccList?.costCenters) ? ccList.costCenters : [];
+    const target = allCostCenters.find((cc) => String(cc?.id || "") === costCenterId);
+    if (!target) {
+      res.status(404).json({ ok: false, message: "未找到指定的 cost center。" });
+      return;
+    }
+
+    const teams = Array.isArray(teamsRaw) ? teamsRaw : [];
+    const teamById = new Map(teams.map((t) => [String(t.id), t]));
+
+    const unresolvedTeams = teamIds.filter((id) => !teamById.has(id));
+    const resolvedTeamIds = teamIds.filter((id) => teamById.has(id));
+
+    const memberResults = await Promise.all(
+      resolvedTeamIds.map(async (id) => {
+        const members = await fetchEnterpriseTeamMembers(endpoint.enterprise, id);
+        return { id, members };
+      })
+    );
+
+    const requestedUsersSet = new Set();
+    for (const tr of memberResults) {
+      for (const login of tr.members) {
+        requestedUsersSet.add(login.toLowerCase());
+      }
+    }
+
+    const existingUsersSet = new Set(
+      (Array.isArray(target.resources) ? target.resources : [])
+        .filter((r) => String(r?.type || "").toLowerCase() === "user")
+        .map((r) => String(r.name || "").trim().toLowerCase())
+        .filter(Boolean)
+    );
+
+    const existingUsers = [];
+    const newUsers = [];
+    for (const u of requestedUsersSet) {
+      if (existingUsersSet.has(u)) existingUsers.push(u);
+      else newUsers.push(u);
+    }
+
+    const usersToRemove = [];
+    for (const u of existingUsersSet) {
+      if (!requestedUsersSet.has(u)) usersToRemove.push(u);
+    }
+
+    if (!dryRun && newUsers.length > 0) {
+      await githubPostJson(
+        `/enterprises/${encodeURIComponent(endpoint.enterprise)}/settings/billing/cost-centers/${encodeURIComponent(costCenterId)}/resource`,
+        { users: newUsers }
+      );
+    }
+
+    if (!dryRun && removeMissingUsers && usersToRemove.length > 0) {
+      await githubDeleteJson(
+        `/enterprises/${encodeURIComponent(endpoint.enterprise)}/settings/billing/cost-centers/${encodeURIComponent(costCenterId)}/resource`,
+        { users: usersToRemove }
+      );
+    }
+
+    res.json({
+      ok: true,
+      dryRun,
+      removeMissingUsers,
+      costCenter: {
+        id: target.id || "",
+        name: target.name || "-",
+      },
+      selectedTeams: resolvedTeamIds.map((id) => ({ id, name: teamById.get(id)?.name || id })),
+      unresolvedTeams,
+      requestedUsersCount: requestedUsersSet.size,
+      existingUsersCount: existingUsers.length,
+      newUsersCount: newUsers.length,
+      usersToRemoveCount: usersToRemove.length,
+      existingUsers,
+      newUsers,
+      usersToRemove,
+    });
+  } catch (error) {
+    writeError(res, error);
+  }
+});
+
+app.get("/costcenter", (_req, res) => {
+  res.sendFile(path.join(__dirname, "public", "costcenter.html"));
+});
+
+app.get("/costcenter/:name", (_req, res) => {
+  res.sendFile(path.join(__dirname, "public", "costcenter.html"));
 });
 
 app.get("*", (_req, res) => {

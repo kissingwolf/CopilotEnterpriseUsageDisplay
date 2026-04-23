@@ -28,6 +28,10 @@ var sortKey = "requests";
 var sortAsc = false;
 var includedQuota = 300;
 var selectedTeams = null; /* null = all selected */
+var latestMetaText = "尚未刷新数据";
+var RENDER_CHUNK_SIZE = 40;
+var CACHE_PREFIX = "copilot-dashboard:usage:";
+var CACHE_TTL_MS = 5 * 60 * 1000;
 
 /* ── Helpers ── */
 function todayStr() {
@@ -53,6 +57,85 @@ function setError(message) {
   if (!message) { errorBox.hidden = true; errorBox.textContent = ""; return; }
   errorBox.hidden = false;
   errorBox.textContent = message;
+}
+
+function isRateLimitPayload(data, status, message) {
+  if (data && data.rateLimit && data.rateLimit.limitExceeded) return true;
+  if (status === 429) return true;
+  return /rate limit|secondary rate limit/i.test(String(message || ""));
+}
+
+function formatRateLimitMessage(data) {
+  var resetAt = data && data.rateLimit ? data.rateLimit.resetAt : null;
+  if (!resetAt) return "GitHub API 速率限制已触发，系统会在稍后自动恢复，请稍后重试。";
+  var d = new Date(resetAt);
+  if (Number.isNaN(d.getTime())) {
+    return "GitHub API 速率限制已触发，系统会在稍后自动恢复，请稍后重试。";
+  }
+  return "GitHub API 速率限制已触发，预计 " + d.toLocaleString("zh-CN", { hour12: false }) + " 后恢复。";
+}
+
+async function apiFetchJson(url, options, fallbackMessage) {
+  var resp = await fetch(url, options);
+  var text = await resp.text();
+  var data = null;
+  try {
+    data = text ? JSON.parse(text) : null;
+  } catch (_e) {
+    data = null;
+  }
+
+  if (!resp.ok || (data && data.ok === false)) {
+    var message = (data && data.message) || fallbackMessage || "请求失败";
+    if (isRateLimitPayload(data, resp.status, message)) {
+      throw new Error(formatRateLimitMessage(data));
+    }
+    throw new Error(message);
+  }
+
+  return data;
+}
+
+function cacheKeyForBody(body) {
+  return CACHE_PREFIX + encodeURIComponent(JSON.stringify(body || {}));
+}
+
+function getCachedData(key) {
+  try {
+    var raw = localStorage.getItem(key);
+    if (!raw) return null;
+    var parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object") return null;
+    if (Date.now() - Number(parsed.ts || 0) > CACHE_TTL_MS) return null;
+    return parsed.data || null;
+  } catch (_e) {
+    return null;
+  }
+}
+
+function setCachedData(key, data) {
+  try {
+    localStorage.setItem(key, JSON.stringify({ ts: Date.now(), data: data }));
+  } catch (_e) {
+    /* Ignore localStorage write failures */
+  }
+}
+
+function setMetaRefreshing(isRefreshing) {
+  meta.classList.toggle("refreshing", Boolean(isRefreshing));
+  meta.textContent = isRefreshing ? (latestMetaText + " | 后台刷新中...") : latestMetaText;
+}
+
+function renderSkeletonRows(colCount, rowCount) {
+  var rows = [];
+  for (var i = 0; i < rowCount; i += 1) {
+    rows.push(
+      '<tr class="skeleton-row">' +
+      Array(colCount).fill('<td><span class="skeleton-line"></span></td>').join("") +
+      "</tr>"
+    );
+  }
+  tbody.innerHTML = rows.join("");
 }
 
 /* ── Date defaults ── */
@@ -95,6 +178,46 @@ function sortRows(rows) {
   });
 }
 
+function buildMainRowHtml(row, isSingle) {
+  if (isSingle) {
+    return "<tr>" +
+      "<td>" + escapeHtml(row.user) + "</td>" +
+      "<td>" + escapeHtml(row.team || "-") + "</td>" +
+      "<td>" + row.requests + "</td>" +
+      "<td>" + buildCycleBar(row.cycleRequests, includedQuota) + "</td>" +
+      "<td>" + row.percentage.toFixed(2) + "%</td>" +
+      "<td>" + row.amount.toFixed(4) + "</td>" +
+      "</tr>";
+  }
+
+  return "<tr>" +
+    "<td>" + escapeHtml(row.user) + "</td>" +
+    "<td>" + escapeHtml(row.team || "-") + "</td>" +
+    "<td>" + buildCycleBar(row.requests, includedQuota) + "</td>" +
+    "<td>" + row.percentage.toFixed(2) + "%</td>" +
+    "<td>" + row.amount.toFixed(4) + "</td>" +
+    "</tr>";
+}
+
+function renderRowsInChunks(sortedRows, isSingle) {
+  tbody.innerHTML = "";
+  var index = 0;
+
+  function pushChunk() {
+    var end = Math.min(index + RENDER_CHUNK_SIZE, sortedRows.length);
+    var html = "";
+    for (; index < end; index += 1) {
+      html += buildMainRowHtml(sortedRows[index], isSingle);
+    }
+    tbody.insertAdjacentHTML("beforeend", html);
+    if (index < sortedRows.length) {
+      requestAnimationFrame(pushChunk);
+    }
+  }
+
+  pushChunk();
+}
+
 document.querySelector("table thead").addEventListener("click", function (e) {
   var th = e.target.closest("th[data-sort]");
   if (!th) return;
@@ -129,6 +252,7 @@ function render(data) {
     "\u6570\u636e\u6e90: " + (currentData.source || "-") +
     (currentData.dateLabel ? " | \u67e5\u8be2: " + currentData.dateLabel : "") +
     " | \u6700\u540e\u5237\u65b0: " + formatTs(currentData.fetchedAt);
+  latestMetaText = meta.textContent;
 
   /* Dynamic headers */
   var theadTr = document.querySelector("table thead tr");
@@ -159,28 +283,7 @@ function render(data) {
   }
 
   var sorted = sortRows(rows);
-  if (isSingle) {
-    tbody.innerHTML = sorted.map(function (row) {
-      return "<tr>" +
-        "<td>" + escapeHtml(row.user) + "</td>" +
-        "<td>" + escapeHtml(row.team || "-") + "</td>" +
-        "<td>" + row.requests + "</td>" +
-        "<td>" + buildCycleBar(row.cycleRequests, includedQuota) + "</td>" +
-        "<td>" + row.percentage.toFixed(2) + "%</td>" +
-        "<td>" + row.amount.toFixed(4) + "</td>" +
-        "</tr>";
-    }).join("");
-  } else {
-    tbody.innerHTML = sorted.map(function (row) {
-      return "<tr>" +
-        "<td>" + escapeHtml(row.user) + "</td>" +
-        "<td>" + escapeHtml(row.team || "-") + "</td>" +
-        "<td>" + buildCycleBar(row.requests, includedQuota) + "</td>" +
-        "<td>" + row.percentage.toFixed(2) + "%</td>" +
-        "<td>" + row.amount.toFixed(4) + "</td>" +
-        "</tr>";
-    }).join("");
-  }
+  renderRowsInChunks(sorted, isSingle);
   updateSortArrows();
 }
 
@@ -279,34 +382,71 @@ function buildBody() {
 /* ── Refresh ── */
 async function loadCached() {
   setError("");
-  var resp = await fetch("/api/usage");
-  render(await resp.json());
+  var initialBody = buildBody();
+  var key = cacheKeyForBody(initialBody);
+  var cached = getCachedData(key);
+  if (cached) {
+    render(cached);
+    setMetaRefreshing(true);
+    return;
+  }
+
+  renderSkeletonRows(activeMode === "single" ? 6 : 5, 8);
+
+  try {
+    var data = await apiFetchJson("/api/usage", {}, "获取缓存数据失败");
+    render(data);
+    if (data && data.ranking && data.ranking.length) {
+      setCachedData(key, data);
+    }
+  } catch (_e) {
+    /* Keep skeleton until first refresh completes */
+  }
 }
 
-async function refresh() {
+async function refresh(options) {
+  var opts = options || {};
   setError("");
+  var body = buildBody();
+  var key = cacheKeyForBody(body);
+  var cached = getCachedData(key);
+
+  if (cached) {
+    render(cached);
+  } else if (!currentData) {
+    renderSkeletonRows(activeMode === "single" ? 6 : 5, 8);
+  }
+
   refreshBtn.disabled = true;
   var oldText = refreshBtn.textContent;
-  refreshBtn.textContent = "\u5237\u65b0\u4e2d...";
+  refreshBtn.textContent = opts.background ? "后台刷新中..." : "\u5237\u65b0\u4e2d...";
+  setMetaRefreshing(true);
   try {
-    var resp = await fetch("/api/usage/refresh", {
+    var data = await apiFetchJson("/api/usage/refresh", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(buildBody()),
-    });
-    var data = await resp.json();
-    if (!resp.ok || !data.ok) throw new Error((data && data.message) || "\u5237\u65b0\u5931\u8d25");
+      body: JSON.stringify(body),
+    }, "\u5237\u65b0\u5931\u8d25");
     render(data);
+    setCachedData(key, data);
   } catch (err) {
     setError(err instanceof Error ? err.message : String(err));
   } finally {
     refreshBtn.disabled = false;
     refreshBtn.textContent = oldText;
+    setMetaRefreshing(false);
   }
 }
 
 refreshBtn.addEventListener("click", refresh);
-loadCached().catch(function (err) { setError(err instanceof Error ? err.message : String(err)); });
+loadCached()
+  .then(function () {
+    return refresh({ background: true });
+  })
+  .catch(function (err) {
+    setMetaRefreshing(false);
+    setError(err instanceof Error ? err.message : String(err));
+  });
 
 /* ── Auto refresh ── */
 var autoRefreshSel = document.getElementById("autoRefreshSel");
@@ -316,7 +456,7 @@ function startAutoRefresh(seconds) {
   if (autoRefreshTimer) { clearInterval(autoRefreshTimer); autoRefreshTimer = null; }
   if (seconds > 0) {
     autoRefreshTimer = setInterval(function () {
-      if (!refreshBtn.disabled) refresh();
+      if (!refreshBtn.disabled) refresh({ background: true });
     }, seconds * 1000);
   }
 }
@@ -334,12 +474,7 @@ function openModal(title, html) {
 function closeModal() { modal.classList.remove("open"); }
 
 async function forceRefreshSeatsCache() {
-  var resp = await fetch("/api/seats?refresh=1");
-  var data = await resp.json();
-  if (!resp.ok || !data.ok) {
-    throw new Error((data && data.message) || "刷新用户席位失败");
-  }
-  return data;
+  return apiFetchJson("/api/seats?refresh=1", {}, "刷新用户席位失败");
 }
 
 modalClose.addEventListener("click", closeModal);
@@ -398,8 +533,7 @@ btnSeats.addEventListener("click", async function () {
   openModal("\u7528\u6237 & Team \u4fe1\u606f", '<div class="loading">\u52a0\u8f7d\u4e2d...</div>');
   try {
     var seatsData = await forceRefreshSeatsCache();
-    var teamsResp = await fetch("/api/enterprise-teams");
-    var teamsData = await teamsResp.json();
+    var teamsData = await apiFetchJson("/api/enterprise-teams", {}, "获取 Team 列表失败");
 
     var html = "";
 
@@ -460,9 +594,7 @@ btnSeats.addEventListener("click", async function () {
           if (loaded) return;
           membersDiv.innerHTML = '<div class="loading">\u52a0\u8f7d\u4e2d...</div>';
           try {
-            var mResp = await fetch("/api/enterprise-teams/" + card.dataset.teamId + "/members");
-            var mData = await mResp.json();
-            if (!mData.ok) throw new Error(mData.message);
+            var mData = await apiFetchJson("/api/enterprise-teams/" + card.dataset.teamId + "/members", {}, "获取 Team 成员失败");
             var members = mData.members || [];
             if (members.length === 0) {
               membersDiv.innerHTML = '<div style="color:var(--muted);padding:8px 0">\u65e0\u6210\u5458</div>';
@@ -527,9 +659,7 @@ btnBillingSummary.addEventListener("click", async function () {
   openModal("\u6574\u4f53\u8d26\u5355\u6c47\u603b", '<div class="loading">\u52a0\u8f7d\u4e2d...</div>');
   try {
     await forceRefreshSeatsCache();
-    var resp = await fetch("/api/billing/summary");
-    var data = await resp.json();
-    if (!data.ok) throw new Error(data.message);
+    var data = await apiFetchJson("/api/billing/summary", {}, "获取账单汇总失败");
 
     var html = "";
 
@@ -598,9 +728,7 @@ btnModels.addEventListener("click", async function () {
     var now = new Date();
     var year = now.getFullYear();
     var month = now.getMonth() + 1;
-    var resp = await fetch("/api/billing/models?year=" + year + "&month=" + month);
-    var data = await resp.json();
-    if (!data.ok) throw new Error(data.message);
+    var data = await apiFetchJson("/api/billing/models?year=" + year + "&month=" + month, {}, "获取模型排行失败");
     var models = data.models || [];
     var html = "<p>" + data.year + "\u5e74" + data.month + "\u6708\u3000\u603b\u8bf7\u6c42: <strong>" + data.totalQuantity + "</strong>\u3000\u603b\u91d1\u989d: <strong>$" + data.totalAmount.toFixed(4) + "</strong></p>";
     html += '<table><thead><tr><th>\u6a21\u578b</th><th>\u8bf7\u6c42\u91cf</th><th>\u5360\u6bd4(%)</th><th>\u5355\u4ef7</th><th>\u91d1\u989d(USD)</th></tr></thead><tbody>';
