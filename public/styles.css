@@ -74,6 +74,10 @@ h1 {
   border-bottom: 1px solid var(--line);
 }
 
+.meta.refreshing {
+  color: #2f6f57;
+}
+
 /* Query bar — single row */
 .query-bar {
   display: flex;
@@ -241,6 +245,25 @@ thead th.sorted {
 
 tbody tr:hover {
   background: #fff8ea;
+}
+
+.skeleton-row:hover {
+  background: transparent;
+}
+
+.skeleton-line {
+  display: inline-block;
+  width: 100%;
+  height: 14px;
+  border-radius: 8px;
+  background: linear-gradient(90deg, #ece5d9 25%, #f5efe4 50%, #ece5d9 75%);
+  background-size: 220% 100%;
+  animation: skeletonShimmer 1.2s ease-in-out infinite;
+}
+
+@keyframes skeletonShimmer {
+  0% { background-position: 180% 0; }
+  100% { background-position: -40% 0; }
 }
 
 .empty {

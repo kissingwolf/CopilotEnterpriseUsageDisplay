@@ -11,6 +11,10 @@ var ccTeamList = document.getElementById("ccTeamList");
 var ccPreviewBtn = document.getElementById("ccPreviewBtn");
 var ccApplyBtn = document.getElementById("ccApplyBtn");
 var ccAssignResult = document.getElementById("ccAssignResult");
+var latestMetaText = "尚未刷新数据";
+var CC_CACHE_PREFIX = "copilot-dashboard:costcenter:";
+var CC_CACHE_TTL_MS = 5 * 60 * 1000;
+var CC_RENDER_CHUNK_SIZE = 30;
 
 var pathParts = window.location.pathname.split("/").filter(Boolean);
 var detailName = pathParts.length >= 2 && pathParts[0] === "costcenter"
@@ -56,6 +60,83 @@ function setError(message) {
   }
   errorBox.hidden = false;
   errorBox.textContent = message;
+}
+
+function isRateLimitPayload(data, status, message) {
+  if (data && data.rateLimit && data.rateLimit.limitExceeded) return true;
+  if (status === 429) return true;
+  return /rate limit|secondary rate limit/i.test(String(message || ""));
+}
+
+function formatRateLimitMessage(data) {
+  var resetAt = data && data.rateLimit ? data.rateLimit.resetAt : null;
+  if (!resetAt) return "GitHub API 速率限制已触发，请稍后再试。";
+  var d = new Date(resetAt);
+  if (Number.isNaN(d.getTime())) return "GitHub API 速率限制已触发，请稍后再试。";
+  return "GitHub API 速率限制已触发，预计 " + d.toLocaleString("zh-CN", { hour12: false }) + " 后恢复。";
+}
+
+async function apiFetchJson(url, options, fallbackMessage) {
+  var resp = await fetch(url, options);
+  var text = await resp.text();
+  var data = null;
+  try {
+    data = text ? JSON.parse(text) : null;
+  } catch (_e) {
+    data = null;
+  }
+
+  if (!resp.ok || (data && data.ok === false)) {
+    var message = (data && data.message) || fallbackMessage || "请求失败";
+    if (isRateLimitPayload(data, resp.status, message)) {
+      throw new Error(formatRateLimitMessage(data));
+    }
+    throw new Error(message);
+  }
+  return data;
+}
+
+function buildCacheKey() {
+  var state = stateSel ? stateSel.value : "";
+  return CC_CACHE_PREFIX + encodeURIComponent(JSON.stringify({ detailName: detailName || "", state: state || "" }));
+}
+
+function getCachedData(key) {
+  try {
+    var raw = localStorage.getItem(key);
+    if (!raw) return null;
+    var parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object") return null;
+    if (Date.now() - Number(parsed.ts || 0) > CC_CACHE_TTL_MS) return null;
+    return parsed.data || null;
+  } catch (_e) {
+    return null;
+  }
+}
+
+function setCachedData(key, data) {
+  try {
+    localStorage.setItem(key, JSON.stringify({ ts: Date.now(), data: data }));
+  } catch (_e) {
+    /* Ignore localStorage write failures */
+  }
+}
+
+function setMetaRefreshing(isRefreshing) {
+  meta.classList.toggle("refreshing", Boolean(isRefreshing));
+  meta.textContent = isRefreshing ? (latestMetaText + " | 后台刷新中...") : latestMetaText;
+}
+
+function renderSkeletonRows(colCount, rowCount) {
+  var rows = [];
+  for (var i = 0; i < rowCount; i += 1) {
+    rows.push(
+      '<tr class="skeleton-row">' +
+      Array(colCount).fill('<td><span class="skeleton-line"></span></td>').join("") +
+      "</tr>"
+    );
+  }
+  tbody.innerHTML = rows.join("");
 }
 
 function buildUserCount(resources) {
@@ -181,29 +262,41 @@ function renderList(data) {
     "Enterprise: " + (data.enterprise || "-") +
     " | 总数: " + (data.total || 0) +
     " | 最后刷新: " + formatTs(data.fetchedAt);
+  latestMetaText = meta.textContent;
 
   if (!rows.length) {
     tbody.innerHTML = '<tr><td colspan="4" class="empty">当前筛选下没有 cost center 数据。</td></tr>';
     return;
   }
 
-  var html = "";
-  rows.forEach(function (row, idx) {
-    var detailLink = "/costcenter/" + encodeURIComponent(row.name || "");
-    var detailId = "cc-detail-" + idx;
-    html += "<tr>" +
-      '<td><div class="cc-name-wrap"><a class="cc-name-link" href="' + detailLink + '">' + escapeHtml(row.name || "-") + '</a>' + buildExpandBtn(detailId, false) + '</div></td>' +
-      '<td>' + formatBudgetCell(row.budgetAmount, row.spentAmount) + '</td>' +
-      "<td>" + escapeHtml(row.state || "-") + "</td>" +
-      "<td>" + buildUserCount(row.resources) + "</td>" +
-      "</tr>";
+  tbody.innerHTML = "";
+  var index = 0;
 
-    html += '<tr id="' + detailId + '" class="cc-detail-row" hidden><td colspan="4">' +
-      buildResourceDetails(row.resources) +
-      "</td></tr>";
-  });
+  function renderChunk() {
+    var end = Math.min(index + CC_RENDER_CHUNK_SIZE, rows.length);
+    var html = "";
+    for (; index < end; index += 1) {
+      var row = rows[index];
+      var detailLink = "/costcenter/" + encodeURIComponent(row.name || "");
+      var detailId = "cc-detail-" + index;
+      html += "<tr>" +
+        '<td><div class="cc-name-wrap"><a class="cc-name-link" href="' + detailLink + '">' + escapeHtml(row.name || "-") + '</a>' + buildExpandBtn(detailId, false) + '</div></td>' +
+        '<td>' + formatBudgetCell(row.budgetAmount, row.spentAmount) + '</td>' +
+        "<td>" + escapeHtml(row.state || "-") + "</td>" +
+        "<td>" + buildUserCount(row.resources) + "</td>" +
+        "</tr>";
 
-  tbody.innerHTML = html;
+      html += '<tr id="' + detailId + '" class="cc-detail-row" hidden><td colspan="4">' +
+        buildResourceDetails(row.resources) +
+        "</td></tr>";
+    }
+    tbody.insertAdjacentHTML("beforeend", html);
+    if (index < rows.length) {
+      requestAnimationFrame(renderChunk);
+    }
+  }
+
+  renderChunk();
 }
 
 function renderDetail(data) {
@@ -220,6 +313,7 @@ function renderDetail(data) {
     "Enterprise: " + (data.enterprise || "-") +
     " | 名称: " + (cc.name || "-") +
     " | 最后刷新: " + formatTs(data.fetchedAt);
+  latestMetaText = meta.textContent;
 
   var html = "";
   var detailId = "cc-detail-single";
@@ -244,9 +338,7 @@ function renderDetail(data) {
 async function loadTeamOptions() {
   if (!detailName || !ccTeamList) return;
   if (!cachedEnterpriseTeams) {
-    var resp = await fetch("/api/enterprise-teams");
-    var data = await resp.json();
-    if (!resp.ok || !data.ok) throw new Error((data && data.message) || "获取 Team 失败");
+    var data = await apiFetchJson("/api/enterprise-teams", {}, "获取 Team 失败");
     cachedEnterpriseTeams = Array.isArray(data.teams) ? data.teams : [];
   }
 
@@ -312,43 +404,57 @@ async function runTeamAssign(dryRun, removeMissingUsers) {
     if (!ok) return null;
   }
 
-  var resp = await fetch("/api/cost-centers/" + encodeURIComponent(currentDetailCostCenter.id) + "/add-users-from-teams", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ teamIds: teamIds, dryRun: dryRun, removeMissingUsers: Boolean(removeMissingUsers) }),
-  });
-  var data = await resp.json();
-  if (!resp.ok || !data.ok) throw new Error((data && data.message) || "批量加入失败");
+  var data = await apiFetchJson(
+    "/api/cost-centers/" + encodeURIComponent(currentDetailCostCenter.id) + "/add-users-from-teams",
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ teamIds: teamIds, dryRun: dryRun, removeMissingUsers: Boolean(removeMissingUsers) }),
+    },
+    "批量加入失败"
+  );
   return data;
 }
 
-async function refresh() {
+async function refresh(options) {
+  var opts = options || {};
   setError("");
+  var cacheKey = buildCacheKey();
+  var cached = getCachedData(cacheKey);
+  if (cached) {
+    if (detailName) renderDetail(cached);
+    else renderList(cached);
+  } else {
+    renderSkeletonRows(4, detailName ? 4 : 8);
+  }
+
   refreshBtn.disabled = true;
   var oldText = refreshBtn.textContent;
-  refreshBtn.textContent = "刷新中...";
+  refreshBtn.textContent = opts.background ? "后台刷新中..." : "刷新中...";
+  setMetaRefreshing(true);
 
   try {
-    var resp;
+    var data;
     if (detailName) {
-      resp = await fetch("/api/cost-centers/by-name/" + encodeURIComponent(detailName));
+      data = await apiFetchJson(
+        "/api/cost-centers/by-name/" + encodeURIComponent(detailName),
+        {},
+        "获取 cost center 详情失败"
+      );
     } else {
       var state = stateSel.value;
       var query = state ? ("?state=" + encodeURIComponent(state)) : "";
-      resp = await fetch("/api/cost-centers" + query);
-    }
-
-    var data = await resp.json();
-    if (!resp.ok || !data.ok) {
-      throw new Error((data && data.message) || "获取 cost center 失败");
+      data = await apiFetchJson("/api/cost-centers" + query, {}, "获取 cost center 列表失败");
     }
     if (detailName) renderDetail(data);
     else renderList(data);
+    setCachedData(cacheKey, data);
   } catch (err) {
     setError(err instanceof Error ? err.message : String(err));
   } finally {
     refreshBtn.disabled = false;
     refreshBtn.textContent = oldText;
+    setMetaRefreshing(false);
   }
 }
 
@@ -433,4 +539,5 @@ if (ccApplyBtn) {
   });
 }
 
-refresh();
+renderSkeletonRows(4, detailName ? 4 : 8);
+refresh({ background: true });

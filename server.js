@@ -19,6 +19,15 @@ const state = {
   queryMode: "default",
 };
 
+class ApiError extends Error {
+  constructor(message, statusCode = 500, extra = {}) {
+    super(message);
+    this.name = "ApiError";
+    this.statusCode = statusCode;
+    this.rateLimit = extra.rateLimit || null;
+  }
+}
+
 const CACHE_TTL = (Number(requiredEnv("CACHE_TTL")) || 300) * 1000; // ms
 const refreshCache = new Map(); // key -> { ts, result }
 
@@ -31,6 +40,18 @@ const teamCache = {
 function requiredEnv(name) {
   const value = process.env[name];
   return value && value.trim() ? value.trim() : "";
+}
+
+function writeError(res, error) {
+  const statusCode = error instanceof ApiError ? error.statusCode : 500;
+  const body = {
+    ok: false,
+    message: error instanceof Error ? error.message : "Unknown error",
+  };
+  if (error instanceof ApiError && error.rateLimit) {
+    body.rateLimit = error.rateLimit;
+  }
+  res.status(statusCode).json(body);
 }
 
 function toNumber(value) {
@@ -138,6 +159,10 @@ async function githubRequestJson(method, pathname, searchParams, body) {
 
   const text = await resp.text();
   let data = null;
+  const limit = Number(resp.headers.get("x-ratelimit-limit") || 0);
+  const remaining = Number(resp.headers.get("x-ratelimit-remaining") || 0);
+  const resetEpoch = Number(resp.headers.get("x-ratelimit-reset") || 0);
+  const resetAt = resetEpoch ? new Date(resetEpoch * 1000).toISOString() : null;
 
   try {
     data = text ? JSON.parse(text) : null;
@@ -147,7 +172,27 @@ async function githubRequestJson(method, pathname, searchParams, body) {
 
   if (!resp.ok) {
     const msg = data && data.message ? data.message : "GitHub API request failed";
-    throw new Error(`${resp.status} ${resp.statusText}: ${msg}`);
+    const isRateLimited =
+      resp.status === 429 ||
+      remaining === 0 ||
+      /rate limit/i.test(String(msg));
+
+    if (isRateLimited) {
+      throw new ApiError(
+        "GitHub API 速率限制已触发，请稍后再试。",
+        429,
+        {
+          rateLimit: {
+            limit,
+            remaining,
+            resetAt,
+            limitExceeded: true,
+          },
+        }
+      );
+    }
+
+    throw new ApiError(`${resp.status} ${resp.statusText}: ${msg}`, resp.status);
   }
 
   return data;
@@ -553,10 +598,7 @@ app.post("/api/usage/refresh", async (req, res) => {
       includedQuota: INCLUDED_QUOTA,
     });
   } catch (error) {
-    res.status(500).json({
-      ok: false,
-      message: error instanceof Error ? error.message : "Unknown error",
-    });
+    writeError(res, error);
   }
 });
 
@@ -572,7 +614,7 @@ app.get("/api/seats", async (req, res) => {
       seats: teamCache.seatsRaw,
     });
   } catch (error) {
-    res.status(500).json({ ok: false, message: error instanceof Error ? error.message : "Unknown error" });
+    writeError(res, error);
   }
 });
 
@@ -638,7 +680,7 @@ app.get("/api/billing/summary", async (_req, res) => {
       totalEstimatedCost,
     });
   } catch (error) {
-    res.status(500).json({ ok: false, message: error instanceof Error ? error.message : "Unknown error" });
+    writeError(res, error);
   }
 });
 
@@ -685,7 +727,7 @@ app.get("/api/billing/models", async (req, res) => {
       totalAmount: Math.round(totalAmount * 10000) / 10000,
     });
   } catch (error) {
-    res.status(500).json({ ok: false, message: error instanceof Error ? error.message : "Unknown error" });
+    writeError(res, error);
   }
 });
 
@@ -719,7 +761,7 @@ app.get("/api/enterprise-teams", async (_req, res) => {
       })),
     });
   } catch (error) {
-    res.status(500).json({ ok: false, message: error instanceof Error ? error.message : "Unknown error" });
+    writeError(res, error);
   }
 });
 
@@ -744,7 +786,7 @@ app.get("/api/enterprise-teams/:teamId/members", async (req, res) => {
       })),
     });
   } catch (error) {
-    res.status(500).json({ ok: false, message: error instanceof Error ? error.message : "Unknown error" });
+    writeError(res, error);
   }
 });
 
@@ -766,10 +808,7 @@ app.post("/api/teams/refresh", async (_req, res) => {
     teamCache.fetchedAt = new Date().toISOString();
     res.json({ ok: true, fetchedAt: teamCache.fetchedAt, totalUsers: seats.length, teams: teamCache.userTeamMap });
   } catch (error) {
-    res.status(500).json({
-      ok: false,
-      message: error instanceof Error ? error.message : "Unknown error",
-    });
+    writeError(res, error);
   }
 });
 
@@ -916,10 +955,7 @@ app.get("/api/cost-centers", async (req, res) => {
       costCenters: normalized,
     });
   } catch (error) {
-    res.status(500).json({
-      ok: false,
-      message: error instanceof Error ? error.message : "Unknown error",
-    });
+    writeError(res, error);
   }
 });
 
@@ -975,10 +1011,7 @@ app.get("/api/cost-centers/by-name/:name", async (req, res) => {
       },
     });
   } catch (error) {
-    res.status(500).json({
-      ok: false,
-      message: error instanceof Error ? error.message : "Unknown error",
-    });
+    writeError(res, error);
   }
 });
 
@@ -1089,10 +1122,7 @@ app.post("/api/cost-centers/:id/add-users-from-teams", async (req, res) => {
       usersToRemove,
     });
   } catch (error) {
-    res.status(500).json({
-      ok: false,
-      message: error instanceof Error ? error.message : "Unknown error",
-    });
+    writeError(res, error);
   }
 });
 
