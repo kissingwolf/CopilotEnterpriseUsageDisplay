@@ -5,23 +5,37 @@
 ## 功能特性
 
 - **每用户用量排行** — 按日期或日期范围查询每个用户的 Premium Request 请求量
+- **默认范围查询模式** — 首页默认切换为“按日期范围查询”
 - **当日 / 本周期双列展示** — 按日期查询时同时显示当日请求量和本月累计请求量
+- **本周期进度条展示** — “本周期请求量”按配额基线显示进度条，支持超额标记
+- **Team 多选筛选** — 支持下拉复选 Team，默认全选，可按 Team 过滤表格数据
 - **Premium Requests (%)** — 基于订阅计划额度计算（Business = 300 / Enterprise = 1000）
 - **费用估算** — 额度内显示订阅费（Business $19），超额按 $0.04/request 累加
 - **自动刷新** — 支持 5 / 15 / 30 / 60 秒定时自动刷新
+- **服务端缓存** — 相同查询在缓存时间内直接返回，减少 API 延迟影响
 - **排序** — 全部表格列支持升序/降序点击排序
 - **用户 & Team 信息** — 查看 Enterprise Teams（名称、描述），点击展开查看 Team 成员
 - **整体账单汇总** — 席位订阅费 + Premium Requests 超额计算 + 费用合计
 - **模型使用排行** — 按月查看各 AI 模型的请求量和费用占比
+- **启动前自检** — 提供 Shell 与 Node 两版 preflight 脚本用于权限和连通性检查
 
 ## 技术架构
 
-```
+```text
 server.js           Express 后端，封装 GitHub REST API 调用
 public/
   index.html        页面结构
   script.js         前端交互、排序、模态框
   styles.css        样式
+  costcenter.html   Cost center 页面
+  costcenter.js     Cost center 交互逻辑
+scripts/
+  preflight-check.sh  启动前自检（Shell）
+  preflight-check.js  启动前自检（Node）
+docs/
+  github-enterprise-copilot-billing-api-checklist.md
+  github-enterprise-copilot-billing-scope-checklist.md
+  minimal-env-and-preflight-design.md
 deploy/
   copilot-dashboard.service   systemd 服务单元
   nginx-copilot-dashboard.conf  Nginx 反向代理配置
@@ -74,13 +88,29 @@ PRODUCT=Copilot
 npm start
 ```
 
-访问 http://localhost:3000
+访问 <http://localhost:3000>
 
 ### 开发模式（文件变更自动重启）
 
 ```bash
 npm run dev
 ```
+
+### 启动前自检（推荐）
+
+```bash
+# Shell 版
+./scripts/preflight-check.sh
+
+# Node 版
+node ./scripts/preflight-check.js
+
+# 严格模式（将 WARN 视为失败）
+./scripts/preflight-check.sh --strict
+node ./scripts/preflight-check.js --strict
+```
+
+建议生产环境先运行自检，再启动服务。
 
 ## 环境变量说明
 
@@ -97,6 +127,30 @@ npm run dev
 | `CACHE_TTL` | 否 | API 响应缓存时长（秒），默认 `300`（5 分钟），缓存期内相同查询直接返回缓存 |
 | `GITHUB_API_BASE` | 否 | API 地址，默认 `https://api.github.com`（GHE.com 需替换） |
 | `PORT` | 否 | 服务端口，默认 `3000` |
+
+## 自检脚本说明
+
+- `scripts/preflight-check.sh`：Shell 版自检，适合 CI/CD 与服务器预检查
+- `scripts/preflight-check.js`：Node 版自检，便于后续与项目日志体系整合
+
+检查项包括：
+
+1. 必填环境变量校验
+2. DNS 与网络连通性
+3. Token 有效性
+4. Seats 与 Premium Usage 必要权限
+5. Cost Centers / Budgets 能力探测（可选功能）
+
+输出级别：`PASS` / `WARN` / `FAIL`
+
+- 默认：有 `FAIL` 时退出码为 `1`
+- `--strict`：有 `WARN` 也返回 `1`
+
+## 文档索引
+
+- `docs/github-enterprise-copilot-billing-api-checklist.md`：Copilot/Billing API 设计与字段映射清单
+- `docs/github-enterprise-copilot-billing-scope-checklist.md`：按接口逐条对应的角色与 scope 核对表
+- `docs/minimal-env-and-preflight-design.md`：最小权限 `.env` 模板与 preflight 设计说明
 
 ## Ubuntu 22.04 部署
 
