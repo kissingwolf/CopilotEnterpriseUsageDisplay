@@ -27,17 +27,25 @@
   - 最多同时显示 5 个数字页码，超出时以省略号分隔（`上一页 1 ... 3 4 5 ... 8 下一页`）
   - 第一页不显示”上一页”按钮，最后一页不显示”下一页”按钮
   - 排序、筛选、刷新时自动回到第 1 页
+- **用户映射管理** — 上传 Excel（`.xlsx` / `.xls`）映射表，将 GitHub 用户名关联到 AD 用户名
+- **AD 名显示** — 已映射用户在首页用量排行中优先显示 AD 用户名，未映射用户仍显示 GitHub 用户名
+- **映射状态可视化** — 用户映射管理页中每行显示 已映射/未映射 标签，支持一键刷新成员列表
+- **自动热重载映射** — 映射文件变更时，内存中的数据自动同步，无需重启服务
 
 ## 技术架构
 
 ```text
-server.js           Express 后端，封装 GitHub REST API 调用
+server.js             Express 后端，封装 GitHub REST API 调用
+lib/
+  user-mapping.js     用户映射服务（Singleton，支持文件监听热重载）
 public/
-  index.html        页面结构
-  script.js         前端交互、排序、模态框
-  styles.css        样式
-  costcenter.html   Cost center 页面
-  costcenter.js     Cost center 交互逻辑
+  index.html          主页面结构（用量排行）
+  script.js           主页面交互、排序、模态框
+  styles.css          全局样式
+  costcenter.html     Cost center 页面
+  costcenter.js       Cost center 交互逻辑
+  user.html           用户映射管理页
+  user.js             用户映射页交互逻辑
 scripts/
   preflight-check.sh  启动前自检（Shell）
   preflight-check.js  启动前自检（Node）
@@ -48,8 +56,10 @@ docs/
 deploy/
   copilot-dashboard.service   systemd 服务单元
   nginx-copilot-dashboard.conf  Nginx 反向代理配置
-.env                配置（不入库）
-.env.example        配置模板
+data/
+  user_mapping.json   本地用户映射表（自动生成，已加入 .gitignore）
+.env                  配置（不入库）
+.env.example          配置模板
 ```
 
 ## 使用的 GitHub API
@@ -129,7 +139,7 @@ node ./scripts/preflight-check.js --strict
 | 变量 | 必填 | 说明 |
 | --- | --- | --- |
 | `GITHUB_TOKEN` | 是 | GitHub PAT，需 Enterprise billing 读取权限 |
-| `ENTERPRISE_SLUG` | 是 | Enterprise slug（如 `StarbucksChina`） |
+| `ENTERPRISE_SLUG` | 是 | Enterprise slug（如 `YourEnterprise-slug`） |
 | `BILLING_YEAR` | 否 | 账单年份（默认取当前年） |
 | `BILLING_MONTH` | 否 | 账单月份（默认取当前月） |
 | `BILLING_DAY` | 否 | 可选，指定具体日期 |
@@ -197,7 +207,7 @@ node ./scripts/preflight-check.js --strict
 
 ```json
 {
-  "teamIds": ["17152814", "17152824"],
+  "teamIds": ["TEAM_ID_1", "TEAM_ID_2"],
   "dryRun": true,
   "removeMissingUsers": false
 }
@@ -216,6 +226,42 @@ node ./scripts/preflight-check.js --strict
 3. `existingUsersCount`
 4. `usersToRemoveCount`
 5. `newUsers` / `existingUsers` / `usersToRemove`
+
+## 用户映射管理 功能使用说明
+
+### 1) 进入页面
+
+访问 `/user` 或通过导航打开用户映射管理页。
+
+### 2) 上传映射文件
+
+- 点击“上传用户映射文件”按钮，选择 Excel 文件（`.xlsx` 或 `.xls`）
+- 文件需包含以下四个列名：
+
+| 列名 | 必填 | 说明 |
+| --- | :---: | --- |
+| `AD-name` | 是 | AD 用户名（显示用） |
+| `AD-mail` | 否 | AD 邮箱地址 |
+| `Github-name` | 是 | GitHub 用户名 |
+| `Github-mail` | 否 | GitHub 邮箱地址 |
+
+- 上传后系统自动解析并保存至本地 `data/user_mapping.json`，**已校验** 的行会跳过 `AD-name` 或 `Github-name` 为空的无效数据
+
+### 3) 使用效果
+
+- **用量排行页**：已映射的用户优先显示其 AD 用户名；未映射的用户仍显示 GitHub 用户名
+- **用户映射页**：可查看所有 Copilot 席位用户的映射状态（已映射 / 未映射），支持分页和排序
+- **重新加载映射**：如果手动修改了 `data/user_mapping.json` 文件，点击“重新加载映射”即可刷新内存数据（文件变更也会被自动检测到）
+
+### 4) 相关接口
+
+| Method | Path | 用途 |
+| :---: | --- | --- |
+| `GET` | `/user` | 渲染用户映射管理页面 |
+| `POST` | `/user/upload-members` | 上传 Excel 文件，解析并保存映射表 |
+| `POST` | `/user/reload-mapping` | 手动触发映射数据重载 |
+| `GET` | `/api/user/members` | 获取 Copilot 成员列表（含 Team + AD 映射信息） |
+| `GET` | `/api/user/info?github=xxx` | 根据 GitHub 用户名查询对应的 AD 信息（供其他页面调用） |
 
 ## Ubuntu 22.04 部署
 
@@ -236,6 +282,7 @@ sudo cp .env /opt/copilot-dashboard/.env
 cd /opt/copilot-dashboard
 sudo npm install --production
 sudo chown -R www-data:www-data /opt/copilot-dashboard
+sudo mkdir -p /opt/copilot-dashboard/data /opt/copilot-dashboard/uploads
 ```
 
 ### 3. 配置 systemd 开机自启
