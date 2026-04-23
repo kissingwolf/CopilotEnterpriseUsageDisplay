@@ -4,11 +4,35 @@ var tbody = document.getElementById("tbody");
 var meta = document.getElementById("meta");
 var errorBox = document.getElementById("error");
 var pageTitle = document.getElementById("pageTitle");
+var backLink = document.getElementById("backLink");
+var teamAssignPanel = document.getElementById("teamAssignPanel");
+var ccTeamAll = document.getElementById("ccTeamAll");
+var ccTeamList = document.getElementById("ccTeamList");
+var ccPreviewBtn = document.getElementById("ccPreviewBtn");
+var ccApplyBtn = document.getElementById("ccApplyBtn");
+var ccAssignResult = document.getElementById("ccAssignResult");
 
 var pathParts = window.location.pathname.split("/").filter(Boolean);
 var detailName = pathParts.length >= 2 && pathParts[0] === "costcenter"
   ? decodeURIComponent(pathParts.slice(1).join("/"))
   : "";
+var currentDetailCostCenter = null;
+var cachedEnterpriseTeams = null;
+
+if (backLink) {
+  if (detailName) {
+    backLink.href = "/costcenter";
+    backLink.textContent = "返回Cost Center 管理页";
+  } else {
+    backLink.href = "/";
+    backLink.textContent = "返回用量看板";
+  }
+}
+
+function toNumber(value) {
+  var n = Number(value);
+  return Number.isFinite(n) ? n : 0;
+}
 
 function escapeHtml(str) {
   return String(str)
@@ -43,14 +67,56 @@ function buildUserCount(resources) {
   return users;
 }
 
-function buildResourceDetails(resources) {
-  if (!resources || resources.length === 0) {
-    return '<div class="cc-empty">无资源</div>';
-  }
+function buildResourceCount(resources, type) {
+  var target = String(type || "").toLowerCase();
+  return (resources || []).filter(function (r) {
+    return String(r.type || "").toLowerCase() === target;
+  }).length;
+}
 
-  var html = '<div class="cc-resource-list">';
-  resources.forEach(function (r) {
-    html += '<span class="cc-tag">' + escapeHtml(r.type || "Unknown") + ': ' + escapeHtml(r.name || "-") + '</span>';
+function groupResources(resources) {
+  var groups = {
+    user: [],
+    organization: [],
+    repository: [],
+    other: [],
+  };
+
+  (resources || []).forEach(function (r) {
+    var t = String(r.type || "").toLowerCase();
+    if (t === "user") groups.user.push(r);
+    else if (t === "organization" || t === "org") groups.organization.push(r);
+    else if (t === "repository" || t === "repo") groups.repository.push(r);
+    else groups.other.push(r);
+  });
+
+  return groups;
+}
+
+function buildResourceDetails(resources) {
+  var groups = groupResources(resources);
+  var sections = [
+    { key: "user", title: "Users" },
+    { key: "organization", title: "Organizations" },
+    { key: "repository", title: "Repositories" },
+    { key: "other", title: "Others" },
+  ];
+
+  var html = '<div class="cc-resource-grid">';
+  sections.forEach(function (section) {
+    var list = groups[section.key];
+    html += '<div class="cc-resource-group">';
+    html += '<div class="cc-resource-title">' + section.title + ' (' + list.length + ')</div>';
+    if (!list.length) {
+      html += '<div class="cc-empty">无 ' + section.title + '</div>';
+    } else {
+      html += '<div class="cc-resource-list">';
+      list.forEach(function (r) {
+        html += '<span class="cc-tag">' + escapeHtml(r.name || "-") + '</span>';
+      });
+      html += '</div>';
+    }
+    html += '</div>';
   });
   html += "</div>";
   return html;
@@ -71,9 +137,41 @@ function formatBudgetCell(amount, spentAmount) {
   if (amount == null || Number.isNaN(Number(amount))) {
     return '<span class="budget-na">--</span>';
   }
-  var spent = formatMoney(spentAmount);
-  var budget = formatMoney(amount);
-  return '<div class="budget-cell"><span class="budget-spent">' + spent + ' spent</span><span class="budget-total">' + budget + ' budget</span></div>';
+  var budgetNum = toNumber(amount);
+  var spentNum = spentAmount == null ? null : toNumber(spentAmount);
+  if (spentNum == null) {
+    return '<div class="budget-cell"><span class="budget-spent">-- spent</span><span class="budget-total">' + formatMoney(budgetNum) + ' budget</span></div>';
+  }
+
+  var ratio = budgetNum > 0 ? spentNum / budgetNum : 0;
+  var percent = budgetNum > 0 ? ratio * 100 : 0;
+  var width = Math.min(Math.max(percent, 0), 100);
+  var level = ratio >= 1 ? "danger" : ratio >= 0.75 ? "warn" : "normal";
+  var over = ratio >= 1 ? '<span class="budget-over">超预算</span>' : "";
+
+  return '<div class="budget-cell budget-progress-cell">' +
+    '<div class="budget-top"><span class="budget-spent">' + formatMoney(spentNum) + ' / ' + formatMoney(budgetNum) + '</span><span class="budget-pct">' + percent.toFixed(1) + '%</span></div>' +
+    '<div class="budget-bar"><div class="budget-bar-fill budget-' + level + '" style="width:' + width.toFixed(1) + '%"></div></div>' +
+    over +
+    '</div>';
+}
+
+function buildDetailInfo(cc) {
+  var resources = Array.isArray(cc.resources) ? cc.resources : [];
+  var users = buildResourceCount(resources, "user");
+  var orgs = buildResourceCount(resources, "organization") + buildResourceCount(resources, "org");
+  var repos = buildResourceCount(resources, "repository") + buildResourceCount(resources, "repo");
+
+  return '<div class="cc-info-grid">' +
+    '<div class="cc-info-item"><span class="k">ID</span><span class="v">' + escapeHtml(cc.id || "-") + '</span></div>' +
+    '<div class="cc-info-item"><span class="k">名称</span><span class="v">' + escapeHtml(cc.name || "-") + '</span></div>' +
+    '<div class="cc-info-item"><span class="k">状态</span><span class="v">' + escapeHtml(cc.state || "-") + '</span></div>' +
+    '<div class="cc-info-item"><span class="k">Azure Subscription</span><span class="v">' + escapeHtml(cc.azureSubscription || "-") + '</span></div>' +
+    '<div class="cc-info-item"><span class="k">Users</span><span class="v">' + users + '</span></div>' +
+    '<div class="cc-info-item"><span class="k">Organizations</span><span class="v">' + orgs + '</span></div>' +
+    '<div class="cc-info-item"><span class="k">Repositories</span><span class="v">' + repos + '</span></div>' +
+    '<div class="cc-info-item"><span class="k">预算进度</span><span class="v">' + formatBudgetCell(cc.budgetAmount, cc.spentAmount) + '</span></div>' +
+    '</div>';
 }
 
 function renderList(data) {
@@ -116,6 +214,8 @@ function renderDetail(data) {
   }
 
   pageTitle.textContent = "Cost Center 详情";
+  currentDetailCostCenter = cc;
+  if (teamAssignPanel) teamAssignPanel.hidden = false;
   meta.textContent =
     "Enterprise: " + (data.enterprise || "-") +
     " | 名称: " + (cc.name || "-") +
@@ -131,10 +231,95 @@ function renderDetail(data) {
     "</tr>";
 
   html += '<tr id="' + detailId + '" class="cc-detail-row"><td colspan="4">' +
+    buildDetailInfo(cc) +
     buildResourceDetails(cc.resources) +
     "</td></tr>";
 
   tbody.innerHTML = html;
+  loadTeamOptions().catch(function (err) {
+    setError(err instanceof Error ? err.message : String(err));
+  });
+}
+
+async function loadTeamOptions() {
+  if (!detailName || !ccTeamList) return;
+  if (!cachedEnterpriseTeams) {
+    var resp = await fetch("/api/enterprise-teams");
+    var data = await resp.json();
+    if (!resp.ok || !data.ok) throw new Error((data && data.message) || "获取 Team 失败");
+    cachedEnterpriseTeams = Array.isArray(data.teams) ? data.teams : [];
+  }
+
+  ccTeamList.innerHTML = cachedEnterpriseTeams.map(function (t) {
+    return '<label class="cc-team-item">' +
+      '<input type="checkbox" class="cc-team-cb" value="' + String(t.id) + '" />' +
+      '<span class="name">' + escapeHtml(t.name || "-") + '</span>' +
+      '<span class="desc">' + escapeHtml(t.description || "") + '</span>' +
+      '</label>';
+  }).join("");
+  updateTeamAllState();
+}
+
+function getSelectedTeamIds() {
+  var boxes = ccTeamList ? ccTeamList.querySelectorAll(".cc-team-cb") : [];
+  var ids = [];
+  boxes.forEach(function (b) {
+    if (b.checked) ids.push(String(b.value));
+  });
+  return ids;
+}
+
+function updateTeamAllState() {
+  if (!ccTeamAll || !ccTeamList) return;
+  var boxes = ccTeamList.querySelectorAll(".cc-team-cb");
+  var total = boxes.length;
+  var checked = getSelectedTeamIds().length;
+  ccTeamAll.checked = total > 0 && checked === total;
+  ccTeamAll.indeterminate = checked > 0 && checked < total;
+}
+
+function renderAssignResult(payload) {
+  if (!ccAssignResult) return;
+  ccAssignResult.hidden = false;
+  var unresolved = Array.isArray(payload.unresolvedTeams) ? payload.unresolvedTeams : [];
+  var existing = Array.isArray(payload.existingUsers) ? payload.existingUsers : [];
+  var newcomers = Array.isArray(payload.newUsers) ? payload.newUsers : [];
+  var removals = Array.isArray(payload.usersToRemove) ? payload.usersToRemove : [];
+  var modeText = payload.dryRun ? "预览结果" : "执行结果";
+  ccAssignResult.innerHTML =
+    '<div class="cc-assign-title">' + modeText + '</div>' +
+    '<div class="cc-assign-summary">请求用户: ' + (payload.requestedUsersCount || 0) +
+    ' | 已存在: ' + (payload.existingUsersCount || 0) +
+    ' | 可新增: ' + (payload.newUsersCount || 0) +
+    ' | 可删除: ' + (payload.usersToRemoveCount || 0) + '</div>' +
+    (unresolved.length ? '<div class="cc-assign-warn">未识别 Team ID: ' + unresolved.join(", ") + '</div>' : "") +
+    (existing.length ? '<details><summary>已存在用户 (' + existing.length + ')</summary><div class="cc-user-list">' + existing.map(escapeHtml).join(", ") + '</div></details>' : "") +
+    (newcomers.length ? '<details open><summary>将新增用户 (' + newcomers.length + ')</summary><div class="cc-user-list">' + newcomers.map(escapeHtml).join(", ") + '</div></details>' : "") +
+    (removals.length ? '<details><summary>可删除用户（Cost Center 有 / Team 无）(' + removals.length + ')</summary><div class="cc-user-list">' + removals.map(escapeHtml).join(", ") + '</div></details>' : "");
+}
+
+async function runTeamAssign(dryRun, removeMissingUsers) {
+  if (!currentDetailCostCenter || !currentDetailCostCenter.id) {
+    throw new Error("当前 cost center 信息不完整。");
+  }
+  var teamIds = getSelectedTeamIds();
+  if (!teamIds.length) {
+    throw new Error("请至少选择一个 Team。");
+  }
+
+  if (!dryRun) {
+    var ok = window.confirm("确认将所选 Team 成员批量加入当前 cost center 的 Users 吗？");
+    if (!ok) return null;
+  }
+
+  var resp = await fetch("/api/cost-centers/" + encodeURIComponent(currentDetailCostCenter.id) + "/add-users-from-teams", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ teamIds: teamIds, dryRun: dryRun, removeMissingUsers: Boolean(removeMissingUsers) }),
+  });
+  var data = await resp.json();
+  if (!resp.ok || !data.ok) throw new Error((data && data.message) || "批量加入失败");
+  return data;
 }
 
 async function refresh() {
@@ -187,5 +372,65 @@ tbody.addEventListener("click", function (e) {
   btn.setAttribute("aria-expanded", isExpanded ? "false" : "true");
   btn.setAttribute("aria-label", isExpanded ? "展开资源明细" : "收起资源明细");
 });
+
+if (ccTeamAll) {
+  ccTeamAll.addEventListener("change", function () {
+    var boxes = ccTeamList ? ccTeamList.querySelectorAll(".cc-team-cb") : [];
+    boxes.forEach(function (b) { b.checked = ccTeamAll.checked; });
+    updateTeamAllState();
+  });
+}
+
+if (ccTeamList) {
+  ccTeamList.addEventListener("change", function () {
+    updateTeamAllState();
+  });
+}
+
+if (ccPreviewBtn) {
+  ccPreviewBtn.addEventListener("click", async function () {
+    setError("");
+    try {
+      ccPreviewBtn.disabled = true;
+      ccApplyBtn.disabled = true;
+      var result = await runTeamAssign(true, false);
+      if (result) renderAssignResult(result);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      ccPreviewBtn.disabled = false;
+      ccApplyBtn.disabled = false;
+    }
+  });
+}
+
+if (ccApplyBtn) {
+  ccApplyBtn.addEventListener("click", async function () {
+    setError("");
+    try {
+      ccApplyBtn.disabled = true;
+      ccPreviewBtn.disabled = true;
+      var preview = await runTeamAssign(true, false);
+      if (preview) renderAssignResult(preview);
+
+      var shouldRemove = false;
+      if (preview && Array.isArray(preview.usersToRemove) && preview.usersToRemove.length > 0) {
+        var confirmDelete = window.confirm(
+          "发现 Cost Center 中存在 Team 中没有的用户（" + preview.usersToRemove.length + " 个）。\n\n点击“确定”=确认删除这些用户\n点击“取消”=忽略本次删除，仅新增缺失用户"
+        );
+        shouldRemove = confirmDelete;
+      }
+
+      var result = await runTeamAssign(false, shouldRemove);
+      if (result) renderAssignResult(result);
+      await refresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      ccApplyBtn.disabled = false;
+      ccPreviewBtn.disabled = false;
+    }
+  });
+}
 
 refresh();

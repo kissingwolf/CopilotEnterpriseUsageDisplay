@@ -18,6 +18,10 @@
 - **整体账单汇总** — 席位订阅费 + Premium Requests 超额计算 + 费用合计
 - **模型使用排行** — 按月查看各 AI 模型的请求量和费用占比
 - **启动前自检** — 提供 Shell 与 Node 两版 preflight 脚本用于权限和连通性检查
+- **Cost Center 详情增强** — 点击名称可查看常规信息卡片、资源分组明细（Users/Organizations/Repositories）
+- **Cost Center 预算进度条** — 预算按百分比可视化（<75% 蓝色，75%-100% 黄色，>=100% 红色）
+- **Team 批量加 Users** — 在 Cost Center 详情页可按 Team 批量将成员加入该 cost center 的 Users 资源
+- **Team 同步可选删除** — 执行批量加入时，若存在“Cost Center 有 / Team 无”用户，会提示“确认删除”或“忽略删除”
 
 ## 技术架构
 
@@ -46,10 +50,13 @@ deploy/
 ## 使用的 GitHub API
 
 | 端点 | 用途 |
-|------|------|
+| --- | --- |
 | `GET /enterprises/{enterprise}/copilot/billing/seats` | 用户列表、Team 归属、计划类型、最后活跃时间/编辑器 |
-| `GET /enterprises/{enterprise}/settings/billing/premium_request/usage` | 每用户 Premium Request 用量（支持 `?user=`、`?year=`、`?month=`、`?day=` 过滤） |
+| `GET /enterprises/{enterprise}/settings/billing/premium_request/usage` | 每用户 Premium Request 用量（支持 `?user=`、`?year=`、`?month=`、`?day=`） |
 | `GET /enterprises/{enterprise}/settings/billing/usage` | 企业整体账单（席位费 + Premium Requests 费用） |
+| `GET /enterprises/{enterprise}/settings/billing/cost-centers` | Cost Center 列表与详情 |
+| `POST /enterprises/{enterprise}/settings/billing/cost-centers/{cost_center_id}/resource` | 向 Cost Center 添加资源（users/orgs/repos） |
+| `DELETE /enterprises/{enterprise}/settings/billing/cost-centers/{cost_center_id}/resource` | 从 Cost Center 移除资源（users/orgs/repos） |
 | `GET /enterprises/{enterprise}/teams` | Enterprise Teams 列表及描述 |
 | `GET /enterprises/{enterprise}/teams/{team_id}/memberships` | Team 成员列表 |
 
@@ -115,7 +122,7 @@ node ./scripts/preflight-check.js --strict
 ## 环境变量说明
 
 | 变量 | 必填 | 说明 |
-|------|------|------|
+| --- | --- | --- |
 | `GITHUB_TOKEN` | 是 | GitHub PAT，需 Enterprise billing 读取权限 |
 | `ENTERPRISE_SLUG` | 是 | Enterprise slug（如 `StarbucksChina`） |
 | `BILLING_YEAR` | 否 | 账单年份（默认取当前年） |
@@ -151,6 +158,59 @@ node ./scripts/preflight-check.js --strict
 - `docs/github-enterprise-copilot-billing-api-checklist.md`：Copilot/Billing API 设计与字段映射清单
 - `docs/github-enterprise-copilot-billing-scope-checklist.md`：按接口逐条对应的角色与 scope 核对表
 - `docs/minimal-env-and-preflight-design.md`：最小权限 `.env` 模板与 preflight 设计说明
+
+## Cost Center 功能使用说明
+
+### 1) 进入详情页
+
+1. 打开 `/costcenter`
+2. 点击某个 Cost Center 名称，进入 `/costcenter/{name}`
+3. 在详情页底部可看到“按 Team 批量加入 Cost Center Users”面板
+
+### 2) 按 Team 批量加入 Users
+
+1. 勾选一个或多个 Team（支持“全选 Team”）
+2. 点击“预览变更”查看：
+   - 请求用户数
+   - 已存在用户数
+   - 可新增用户数
+   - 可删除用户数（Cost Center 有 / Team 无）
+3. 点击“确认加入 Users”执行
+
+### 3) 删除行为（已实现）
+
+当存在“Cost Center 有、Team 没有”的用户时，执行阶段会弹窗二次确认：
+
+1. 点击“确定” => 删除这批用户（同时执行新增）
+2. 点击“取消” => 忽略删除，仅执行新增
+
+### 4) 后端聚合接口（本项目新增）
+
+`POST /api/cost-centers/:id/add-users-from-teams`
+
+请求体：
+
+```json
+{
+  "teamIds": ["17152814", "17152824"],
+  "dryRun": true,
+  "removeMissingUsers": false
+}
+```
+
+参数说明：
+
+1. `teamIds`：要同步的 Team ID 列表
+2. `dryRun`：是否仅预览（不落库）
+3. `removeMissingUsers`：执行时是否删除“Cost Center 有 / Team 无”的用户
+
+返回中包含：
+
+1. `requestedUsersCount`
+2. `newUsersCount`
+3. `existingUsersCount`
+4. `usersToRemoveCount`
+5. `newUsers` / `existingUsers` / `usersToRemove`
 
 ## Ubuntu 22.04 部署
 
@@ -206,7 +266,7 @@ sudo systemctl reload nginx
 ### 部署文件说明
 
 | 文件 | 说明 |
-|------|------|
+| --- | --- |
 | `deploy/copilot-dashboard.service` | systemd 服务单元，以 `www-data` 用户运行，异常自动重启 |
 | `deploy/nginx-copilot-dashboard.conf` | Nginx 反向代理，将 80 端口转发到 Node.js 的 3000 端口 |
 
@@ -218,7 +278,7 @@ sudo systemctl reload nginx
 - **超额**（请求量 > 计划额度）：费用 = 基础价 + (超出请求数 × $0.04)
 
 | 计划 | 月额度 | 基础价 | 超额单价 |
-|------|--------|--------|----------|
+| --- | --- | --- | --- |
 | Business | 300 requests | $19 | $0.04/request |
 | Enterprise | 1000 requests | $39 | $0.04/request |
 

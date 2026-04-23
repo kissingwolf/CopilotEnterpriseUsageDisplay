@@ -4,14 +4,14 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Cost Center 管理</title>
-    <link rel="stylesheet" href="./styles.css" />
+    <link rel="stylesheet" href="/styles.css" />
   </head>
   <body>
     <main class="page">
       <section class="card">
         <header class="topbar topbar-row">
           <h1 id="pageTitle">Cost Center 管理</h1>
-          <a class="back-link" href="/">返回用量看板</a>
+          <a id="backLink" class="back-link" href="/">返回用量看板</a>
         </header>
 
         <div class="query-bar">
@@ -46,9 +46,23 @@
             </tbody>
           </table>
         </div>
+
+        <section id="teamAssignPanel" class="cc-assign-panel" hidden>
+          <h2>按 Team 批量加入 Cost Center Users</h2>
+          <p class="cc-panel-desc">选择一个或多个 Team，将 Team 成员批量加入当前 cost center 的 Users 资源。</p>
+          <div class="cc-team-toolbar">
+            <label class="cc-team-check-all">
+              <input type="checkbox" id="ccTeamAll" /> 全选 Team
+            </label>
+            <button id="ccPreviewBtn" class="info-btn" type="button">预览变更</button>
+            <button id="ccApplyBtn" class="refresh-btn" type="button">确认加入 Users</button>
+          </div>
+          <div id="ccTeamList" class="cc-team-list"></div>
+          <div id="ccAssignResult" class="cc-assign-result" hidden></div>
+        </section>
       </section>
     </main>
 
-    <script src="./costcenter.js"></script>
+    <script src="/costcenter.js"></script>
   </body>
 </html>

@@ -115,7 +115,7 @@ function buildEndpoint() {
   throw new Error("Please set ENTERPRISE_SLUG or ORG_NAME in .env");
 }
 
-async function githubGetJson(pathname, searchParams) {
+async function githubRequestJson(method, pathname, searchParams, body) {
   const token = requiredEnv("GITHUB_TOKEN");
   if (!token) {
     throw new Error("Missing GITHUB_TOKEN in .env");
@@ -126,11 +126,14 @@ async function githubGetJson(pathname, searchParams) {
   const url = `${apiBase}${pathname}${query ? `?${query}` : ""}`;
 
   const resp = await fetch(url, {
+    method,
     headers: {
       Accept: "application/vnd.github+json",
       Authorization: `Bearer ${token}`,
       "X-GitHub-Api-Version": "2026-03-10",
+      ...(body ? { "Content-Type": "application/json" } : {}),
     },
+    ...(body ? { body: JSON.stringify(body) } : {}),
   });
 
   const text = await resp.text();
@@ -148,6 +151,18 @@ async function githubGetJson(pathname, searchParams) {
   }
 
   return data;
+}
+
+async function githubGetJson(pathname, searchParams) {
+  return githubRequestJson("GET", pathname, searchParams);
+}
+
+async function githubPostJson(pathname, body) {
+  return githubRequestJson("POST", pathname, undefined, body);
+}
+
+async function githubDeleteJson(pathname, body) {
+  return githubRequestJson("DELETE", pathname, undefined, body);
 }
 
 async function fetchUsageFromGitHub(dateOverride) {
@@ -835,6 +850,26 @@ async function fetchCostCenterSpentMap(enterprise, costCenters) {
   return byName;
 }
 
+async function fetchEnterpriseTeamMembers(enterprise, teamId) {
+  const members = [];
+  let page = 1;
+  while (true) {
+    const raw = await githubGetJson(
+      `/enterprises/${encodeURIComponent(enterprise)}/teams/${teamId}/memberships`,
+      new URLSearchParams({ per_page: "100", page: String(page) })
+    );
+    const batch = Array.isArray(raw) ? raw : [];
+    for (const m of batch) {
+      if (typeof m?.login === "string" && m.login.trim()) {
+        members.push(m.login.trim());
+      }
+    }
+    if (batch.length < 100) break;
+    page += 1;
+  }
+  return members;
+}
+
 app.get("/api/cost-centers", async (req, res) => {
   try {
     const endpoint = buildEndpoint();
@@ -938,6 +973,120 @@ app.get("/api/cost-centers/by-name/:name", async (req, res) => {
         azureSubscription: found.azure_subscription || "",
         resources: Array.isArray(found.resources) ? found.resources : [],
       },
+    });
+  } catch (error) {
+    res.status(500).json({
+      ok: false,
+      message: error instanceof Error ? error.message : "Unknown error",
+    });
+  }
+});
+
+app.post("/api/cost-centers/:id/add-users-from-teams", async (req, res) => {
+  try {
+    const endpoint = buildEndpoint();
+    if (endpoint.kind !== "enterprise") {
+      throw new Error("Cost center API 仅支持 enterprise 模式。请设置 ENTERPRISE_SLUG。");
+    }
+
+    const costCenterId = String(req.params.id || "").trim();
+    if (!costCenterId) throw new Error("缺少 cost center ID。");
+
+    const teamIds = Array.isArray(req.body?.teamIds)
+      ? req.body.teamIds.map((v) => String(v).trim()).filter((v) => /^\d+$/.test(v))
+      : [];
+    const dryRun = Boolean(req.body?.dryRun);
+    const removeMissingUsers = Boolean(req.body?.removeMissingUsers);
+
+    if (teamIds.length === 0) {
+      throw new Error("请至少选择一个 Team。");
+    }
+
+    const [ccList, teamsRaw] = await Promise.all([
+      githubGetJson(`/enterprises/${encodeURIComponent(endpoint.enterprise)}/settings/billing/cost-centers`),
+      githubGetJson(
+        `/enterprises/${encodeURIComponent(endpoint.enterprise)}/teams`,
+        new URLSearchParams({ per_page: "100" })
+      ),
+    ]);
+
+    const allCostCenters = Array.isArray(ccList?.costCenters) ? ccList.costCenters : [];
+    const target = allCostCenters.find((cc) => String(cc?.id || "") === costCenterId);
+    if (!target) {
+      res.status(404).json({ ok: false, message: "未找到指定的 cost center。" });
+      return;
+    }
+
+    const teams = Array.isArray(teamsRaw) ? teamsRaw : [];
+    const teamById = new Map(teams.map((t) => [String(t.id), t]));
+
+    const unresolvedTeams = teamIds.filter((id) => !teamById.has(id));
+    const resolvedTeamIds = teamIds.filter((id) => teamById.has(id));
+
+    const memberResults = await Promise.all(
+      resolvedTeamIds.map(async (id) => {
+        const members = await fetchEnterpriseTeamMembers(endpoint.enterprise, id);
+        return { id, members };
+      })
+    );
+
+    const requestedUsersSet = new Set();
+    for (const tr of memberResults) {
+      for (const login of tr.members) {
+        requestedUsersSet.add(login.toLowerCase());
+      }
+    }
+
+    const existingUsersSet = new Set(
+      (Array.isArray(target.resources) ? target.resources : [])
+        .filter((r) => String(r?.type || "").toLowerCase() === "user")
+        .map((r) => String(r.name || "").trim().toLowerCase())
+        .filter(Boolean)
+    );
+
+    const existingUsers = [];
+    const newUsers = [];
+    for (const u of requestedUsersSet) {
+      if (existingUsersSet.has(u)) existingUsers.push(u);
+      else newUsers.push(u);
+    }
+
+    const usersToRemove = [];
+    for (const u of existingUsersSet) {
+      if (!requestedUsersSet.has(u)) usersToRemove.push(u);
+    }
+
+    if (!dryRun && newUsers.length > 0) {
+      await githubPostJson(
+        `/enterprises/${encodeURIComponent(endpoint.enterprise)}/settings/billing/cost-centers/${encodeURIComponent(costCenterId)}/resource`,
+        { users: newUsers }
+      );
+    }
+
+    if (!dryRun && removeMissingUsers && usersToRemove.length > 0) {
+      await githubDeleteJson(
+        `/enterprises/${encodeURIComponent(endpoint.enterprise)}/settings/billing/cost-centers/${encodeURIComponent(costCenterId)}/resource`,
+        { users: usersToRemove }
+      );
+    }
+
+    res.json({
+      ok: true,
+      dryRun,
+      removeMissingUsers,
+      costCenter: {
+        id: target.id || "",
+        name: target.name || "-",
+      },
+      selectedTeams: resolvedTeamIds.map((id) => ({ id, name: teamById.get(id)?.name || id })),
+      unresolvedTeams,
+      requestedUsersCount: requestedUsersSet.size,
+      existingUsersCount: existingUsers.length,
+      newUsersCount: newUsers.length,
+      usersToRemoveCount: usersToRemove.length,
+      existingUsers,
+      newUsers,
+      usersToRemove,
     });
   } catch (error) {
     res.status(500).json({
