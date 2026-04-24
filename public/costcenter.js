@@ -211,7 +211,16 @@ function buildExpandBtn(detailId, expanded) {
 
 function formatMoney(value) {
   if (value == null || Number.isNaN(Number(value))) return "--";
-  return "$" + Number(value).toFixed(2);
+  return "$" + Number(value).toLocaleString("en-US", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
+}
+
+function formatSeatSubscriptionFee(resources, baseCost) {
+  var users = buildUserCount(resources);
+  var fee = toNumber(baseCost) * users;
+  return formatMoney(fee);
 }
 
 function formatBudgetCell(amount, spentAmount) {
@@ -257,6 +266,7 @@ function buildDetailInfo(cc) {
 
 function renderList(data) {
   var rows = Array.isArray(data.costCenters) ? data.costCenters : [];
+  var seatBaseCost = toNumber(data && data.seatBaseCost);
 
   meta.textContent =
     "Enterprise: " + (data.enterprise || "-") +
@@ -265,7 +275,7 @@ function renderList(data) {
   latestMetaText = meta.textContent;
 
   if (!rows.length) {
-    tbody.innerHTML = '<tr><td colspan="4" class="empty">当前筛选下没有 cost center 数据。</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="5" class="empty">当前筛选下没有 cost center 数据。</td></tr>';
     return;
   }
 
@@ -281,12 +291,13 @@ function renderList(data) {
       var detailId = "cc-detail-" + index;
       html += "<tr>" +
         '<td><div class="cc-name-wrap"><a class="cc-name-link" href="' + detailLink + '">' + escapeHtml(row.name || "-") + '</a>' + buildExpandBtn(detailId, false) + '</div></td>' +
+        '<td class="cc-money-col">' + formatSeatSubscriptionFee(row.resources, row.seatBaseCost != null ? row.seatBaseCost : seatBaseCost) + '</td>' +
         '<td>' + formatBudgetCell(row.budgetAmount, row.spentAmount) + '</td>' +
         "<td>" + escapeHtml(row.state || "-") + "</td>" +
         "<td>" + buildUserCount(row.resources) + "</td>" +
         "</tr>";
 
-      html += '<tr id="' + detailId + '" class="cc-detail-row" hidden><td colspan="4">' +
+      html += '<tr id="' + detailId + '" class="cc-detail-row" hidden><td colspan="5">' +
         buildResourceDetails(row.resources) +
         "</td></tr>";
     }
@@ -302,7 +313,7 @@ function renderList(data) {
 function renderDetail(data) {
   var cc = data && data.costCenter ? data.costCenter : null;
   if (!cc) {
-    tbody.innerHTML = '<tr><td colspan="4" class="empty">未找到该 cost center。</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="5" class="empty">未找到该 cost center。</td></tr>';
     return;
   }
 
@@ -319,12 +330,13 @@ function renderDetail(data) {
   var detailId = "cc-detail-single";
   html += "<tr>" +
     '<td><div class="cc-name-wrap">' + escapeHtml(cc.name || "-") + buildExpandBtn(detailId, true) + "</div></td>" +
+    '<td class="cc-money-col">' + formatSeatSubscriptionFee(cc.resources, cc.seatBaseCost != null ? cc.seatBaseCost : (data && data.seatBaseCost)) + '</td>' +
     '<td>' + formatBudgetCell(cc.budgetAmount, cc.spentAmount) + '</td>' +
     "<td>" + escapeHtml(cc.state || "-") + "</td>" +
     "<td>" + buildUserCount(cc.resources) + "</td>" +
     "</tr>";
 
-  html += '<tr id="' + detailId + '" class="cc-detail-row"><td colspan="4">' +
+  html += '<tr id="' + detailId + '" class="cc-detail-row"><td colspan="5">' +
     buildDetailInfo(cc) +
     buildResourceDetails(cc.resources) +
     "</td></tr>";
@@ -425,7 +437,7 @@ async function refresh(options) {
     if (detailName) renderDetail(cached);
     else renderList(cached);
   } else {
-    renderSkeletonRows(4, detailName ? 4 : 8);
+    renderSkeletonRows(5, detailName ? 4 : 8);
   }
 
   refreshBtn.disabled = true;
@@ -539,5 +551,5 @@ if (ccApplyBtn) {
   });
 }
 
-renderSkeletonRows(4, detailName ? 4 : 8);
+renderSkeletonRows(5, detailName ? 4 : 8);
 refresh({ background: true });
