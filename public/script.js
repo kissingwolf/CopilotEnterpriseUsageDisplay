@@ -639,6 +639,9 @@ btnSeats.addEventListener("click", async function () {
         tHtml += '<div class="team-card" data-team-id="' + team.id + '">';
         tHtml += '<div class="team-card-header">';
         tHtml += '<span class="team-name-link">' + escapeHtml(team.name) + '</span>';
+        if (team.membersCount != null) {
+          tHtml += '<span class="team-member-count">' + team.membersCount + ' 人</span>';
+        }
         tHtml += '<span class="team-toggle">\u25B6</span>';
         tHtml += '</div>';
         if (team.description) {
