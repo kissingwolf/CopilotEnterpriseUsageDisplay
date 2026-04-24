@@ -1338,18 +1338,27 @@ app.post("/api/cost-centers/:id/add-users-from-teams", async (req, res) => {
       if (!requestedUsersSet.has(u)) usersToRemove.push(u);
     }
 
+    // GitHub 限制每次请求最多 50 个 resources，需按批次提交
+    const RESOURCE_BATCH_SIZE = 50;
+    const resourcePath = `/enterprises/${encodeURIComponent(endpoint.enterprise)}/settings/billing/cost-centers/${encodeURIComponent(costCenterId)}/resource`;
+
+    let addedBatches = 0;
+    let removedBatches = 0;
+
     if (!dryRun && newUsers.length > 0) {
-      await githubPostJson(
-        `/enterprises/${encodeURIComponent(endpoint.enterprise)}/settings/billing/cost-centers/${encodeURIComponent(costCenterId)}/resource`,
-        { users: newUsers }
-      );
+      for (let i = 0; i < newUsers.length; i += RESOURCE_BATCH_SIZE) {
+        const chunk = newUsers.slice(i, i + RESOURCE_BATCH_SIZE);
+        await githubPostJson(resourcePath, { users: chunk });
+        addedBatches += 1;
+      }
     }
 
     if (!dryRun && removeMissingUsers && usersToRemove.length > 0) {
-      await githubDeleteJson(
-        `/enterprises/${encodeURIComponent(endpoint.enterprise)}/settings/billing/cost-centers/${encodeURIComponent(costCenterId)}/resource`,
-        { users: usersToRemove }
-      );
+      for (let i = 0; i < usersToRemove.length; i += RESOURCE_BATCH_SIZE) {
+        const chunk = usersToRemove.slice(i, i + RESOURCE_BATCH_SIZE);
+        await githubDeleteJson(resourcePath, { users: chunk });
+        removedBatches += 1;
+      }
     }
 
     res.json({
@@ -1369,6 +1378,9 @@ app.post("/api/cost-centers/:id/add-users-from-teams", async (req, res) => {
       existingUsers,
       newUsers,
       usersToRemove,
+      addedBatches,
+      removedBatches,
+      batchSize: RESOURCE_BATCH_SIZE,
     });
   } catch (error) {
     writeError(res, error);
