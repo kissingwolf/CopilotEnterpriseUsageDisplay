@@ -1062,22 +1062,47 @@ app.post("/api/teams/refresh", async (_req, res) => {
 });
 
 async function fetchCostCenterBudgetMap(enterprise) {
-  const data = await githubGetJson(
-    `/enterprises/${encodeURIComponent(enterprise)}/settings/billing/budgets`,
-    new URLSearchParams({ scope: "cost_center", per_page: "100", page: "1" })
-  );
-
-  const budgets = Array.isArray(data?.budgets) ? data.budgets : [];
   const byName = new Map();
+  let page = 1;
 
-  for (const budget of budgets) {
-    const scope = String(budget?.budget_scope || "").toLowerCase();
-    if (scope !== "cost_center") continue;
-    const name = String(budget?.budget_entity_name || "").trim();
-    if (!name) continue;
-    const amount = toNumber(budget?.budget_amount);
-    const key = name.toLowerCase();
-    byName.set(key, (byName.get(key) || 0) + amount);
+  while (true) {
+    const data = await githubGetJson(
+      `/enterprises/${encodeURIComponent(enterprise)}/settings/billing/budgets`,
+      new URLSearchParams({ scope: "cost_center", per_page: "100", page: String(page) })
+    );
+
+    const budgets = Array.isArray(data?.budgets) ? data.budgets : [];
+    for (const budget of budgets) {
+      const scope = String(budget?.budget_scope || "").toLowerCase();
+      if (scope !== "cost_center") continue;
+
+      const name = String(budget?.budget_entity_name || "").trim();
+      if (!name) continue;
+
+      const amount = toNumber(budget?.budget_amount);
+      const key = name.toLowerCase();
+      const prev = byName.get(key) || { amount: 0, skus: new Set() };
+
+      prev.amount += amount;
+
+      const skuList = [];
+      if (Array.isArray(budget?.budget_product_skus)) {
+        skuList.push(...budget.budget_product_skus);
+      }
+      if (typeof budget?.budget_product_sku === "string") {
+        skuList.push(budget.budget_product_sku);
+      }
+      for (const sku of skuList) {
+        const normalizedSku = String(sku || "").trim().toLowerCase();
+        if (normalizedSku) prev.skus.add(normalizedSku);
+      }
+
+      byName.set(key, prev);
+    }
+
+    const hasNextPage = Boolean(data?.has_next_page);
+    if (!hasNextPage) break;
+    page += 1;
   }
 
   return byName;
@@ -1091,16 +1116,20 @@ function getBillingYearMonthForCostCenter() {
   };
 }
 
-function summarizeUsageItemsAmount(payload) {
+function summarizeUsageItemsAmount(payload, allowedSkus) {
   const usageItems = Array.isArray(payload?.usageItems) ? payload.usageItems : [];
   let spent = 0;
   for (const item of usageItems) {
+    if (allowedSkus && allowedSkus.size > 0) {
+      const itemSku = String(item?.sku || "").trim().toLowerCase();
+      if (!itemSku || !allowedSkus.has(itemSku)) continue;
+    }
     spent += toNumber(item.netAmount) || toNumber(item.grossAmount) || toNumber(item.amount);
   }
   return Math.round(spent * 10000) / 10000;
 }
 
-async function fetchCostCenterSpentMap(enterprise, costCenters) {
+async function fetchCostCenterSpentMap(enterprise, costCenters, budgetByName) {
   const byName = new Map();
   if (!Array.isArray(costCenters) || costCenters.length === 0) return byName;
 
@@ -1115,6 +1144,11 @@ async function fetchCostCenterSpentMap(enterprise, costCenters) {
         const ccName = String(cc?.name || "").trim();
         if (!ccId || !ccName) return;
 
+        const budgetInfo = budgetByName instanceof Map
+          ? budgetByName.get(ccName.toLowerCase())
+          : null;
+        const allowedSkus = budgetInfo?.skus instanceof Set ? budgetInfo.skus : new Set();
+
         try {
           const params = new URLSearchParams();
           params.set("year", String(year));
@@ -1126,7 +1160,7 @@ async function fetchCostCenterSpentMap(enterprise, costCenters) {
             params
           );
 
-          byName.set(ccName.toLowerCase(), summarizeUsageItemsAmount(usage));
+          byName.set(ccName.toLowerCase(), summarizeUsageItemsAmount(usage, allowedSkus));
         } catch {
           byName.set(ccName.toLowerCase(), null);
         }
@@ -1177,18 +1211,19 @@ app.get("/api/cost-centers", async (req, res) => {
     );
 
     const costCenters = Array.isArray(data?.costCenters) ? data.costCenters : [];
-    const [budgetByName, spentByName] = await Promise.all([
-      fetchCostCenterBudgetMap(endpoint.enterprise),
-      fetchCostCenterSpentMap(endpoint.enterprise, costCenters),
-    ]);
+    const budgetByName = await fetchCostCenterBudgetMap(endpoint.enterprise);
+    const spentByName = await fetchCostCenterSpentMap(endpoint.enterprise, costCenters, budgetByName);
+    const seatBaseCost = PLAN_CONFIG.business.baseCost;
 
     const normalized = costCenters.map((cc) => {
       const resources = Array.isArray(cc.resources) ? cc.resources : [];
       const nameKey = String(cc.name || "").trim().toLowerCase();
+      const budgetInfo = budgetByName.get(nameKey) || null;
       return {
         id: cc.id || "",
         name: cc.name || "-",
-        budgetAmount: budgetByName.get(nameKey) ?? null,
+        seatBaseCost,
+        budgetAmount: budgetInfo ? budgetInfo.amount : null,
         spentAmount: spentByName.get(nameKey) ?? null,
         state: cc.state || "-",
         azureSubscription: cc.azure_subscription || "",
@@ -1200,6 +1235,7 @@ app.get("/api/cost-centers", async (req, res) => {
       ok: true,
       fetchedAt: new Date().toISOString(),
       enterprise: endpoint.enterprise,
+      seatBaseCost,
       total: normalized.length,
       costCenters: normalized,
     });
@@ -1239,20 +1275,22 @@ app.get("/api/cost-centers/by-name/:name", async (req, res) => {
       return;
     }
 
-    const [budgetByName, spentByName] = await Promise.all([
-      fetchCostCenterBudgetMap(endpoint.enterprise),
-      fetchCostCenterSpentMap(endpoint.enterprise, [found]),
-    ]);
+    const budgetByName = await fetchCostCenterBudgetMap(endpoint.enterprise);
+    const spentByName = await fetchCostCenterSpentMap(endpoint.enterprise, [found], budgetByName);
 
     const nameKey = String(found.name || "").trim().toLowerCase();
+    const budgetInfo = budgetByName.get(nameKey) || null;
+    const seatBaseCost = PLAN_CONFIG.business.baseCost;
     res.json({
       ok: true,
       fetchedAt: new Date().toISOString(),
       enterprise: endpoint.enterprise,
+      seatBaseCost,
       costCenter: {
         id: found.id || "",
         name: found.name || "-",
-        budgetAmount: budgetByName.get(nameKey) ?? null,
+        seatBaseCost,
+        budgetAmount: budgetInfo ? budgetInfo.amount : null,
         spentAmount: spentByName.get(nameKey) ?? null,
         state: found.state || "-",
         azureSubscription: found.azure_subscription || "",

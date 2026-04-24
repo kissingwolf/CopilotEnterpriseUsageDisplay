@@ -16,6 +16,7 @@ var modalClose = document.getElementById("modalClose");
 var btnSeats = document.getElementById("btnSeats");
 var btnBillingSummary = document.getElementById("btnBillingSummary");
 var btnModels = document.getElementById("btnModels");
+var btnBudgetCost = document.getElementById("btnBudgetCost");
 var teamFilterBtn = document.getElementById("teamFilterBtn");
 var teamFilterDropdown = document.getElementById("teamFilterDropdown");
 var teamFilterAll = document.getElementById("teamFilterAll");
@@ -139,6 +140,51 @@ function renderSkeletonRows(colCount, rowCount) {
     );
   }
   tbody.innerHTML = rows.join("");
+}
+
+function toNumber(value) {
+  var n = Number(value);
+  return Number.isFinite(n) ? n : 0;
+}
+
+function formatUsd(value) {
+  if (value == null || Number.isNaN(Number(value))) return "--";
+  return "$" + Number(value).toLocaleString("en-US", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
+}
+
+function buildUserCountFromResources(resources) {
+  var users = 0;
+  (resources || []).forEach(function (r) {
+    if (String(r && r.type || "").toLowerCase() === "user") users += 1;
+  });
+  return users;
+}
+
+function renderBudgetProgressCell(amount, spentAmount) {
+  if (amount == null || Number.isNaN(Number(amount))) {
+    return '<span class="budget-na">--</span>';
+  }
+
+  var budgetNum = toNumber(amount);
+  var spentNum = spentAmount == null ? null : toNumber(spentAmount);
+  if (spentNum == null) {
+    return '<div class="budget-cell"><span class="budget-spent">-- spent</span><span class="budget-total">' + formatUsd(budgetNum) + ' budget</span></div>';
+  }
+
+  var ratio = budgetNum > 0 ? spentNum / budgetNum : 0;
+  var percent = budgetNum > 0 ? ratio * 100 : 0;
+  var width = Math.min(Math.max(percent, 0), 100);
+  var level = ratio >= 1 ? "danger" : ratio >= 0.75 ? "warn" : "normal";
+  var over = ratio >= 1 ? '<span class="budget-over">超预算</span>' : "";
+
+  return '<div class="budget-cell budget-progress-cell">' +
+    '<div class="budget-top"><span class="budget-spent">' + formatUsd(spentNum) + ' / ' + formatUsd(budgetNum) + '</span><span class="budget-pct">' + percent.toFixed(1) + '%</span></div>' +
+    '<div class="budget-bar"><div class="budget-bar-fill budget-' + level + '" style="width:' + width.toFixed(1) + '%"></div></div>' +
+    over +
+    '</div>';
 }
 
 /* ── Date defaults ── */
@@ -819,6 +865,39 @@ btnModels.addEventListener("click", async function () {
         "<td>" + pct + "%</td>" +
         "<td>$" + m.pricePerUnit.toFixed(2) + "</td>" +
         "<td>$" + m.grossAmount.toFixed(4) + "</td>" +
+        "</tr>";
+    });
+    html += "</tbody></table>";
+    modalBody.innerHTML = html;
+  } catch (err) {
+    modalBody.innerHTML = '<div style="color:var(--danger)">' + escapeHtml(err.message) + "</div>";
+  }
+});
+
+/* ── Budget & Cost (预算和费用) ── */
+btnBudgetCost.addEventListener("click", async function () {
+  openModal("预算和费用", '<div class="loading">加载中...</div>');
+  try {
+    var data = await apiFetchJson("/api/cost-centers?state=active", {}, "获取 Cost Center 预算和费用失败");
+    var rows = Array.isArray(data.costCenters) ? data.costCenters : [];
+    var seatBaseCost = toNumber(data.seatBaseCost);
+
+    if (!rows.length) {
+      modalBody.innerHTML = '<div style="color:var(--muted)">暂无 Cost Center 数据。</div>';
+      return;
+    }
+
+    var html = "";
+    html += '<table><thead><tr><th>名称</th><th class="cc-money-col">席位订阅费</th><th>套餐外预算</th></tr></thead><tbody>';
+    rows.forEach(function (row) {
+      var users = buildUserCountFromResources(row.resources);
+      var baseCost = row.seatBaseCost != null ? row.seatBaseCost : seatBaseCost;
+      var fee = toNumber(baseCost) * users;
+
+      html += "<tr>" +
+        "<td>" + escapeHtml(row.name || "-") + "</td>" +
+        '<td class="cc-money-col">' + formatUsd(fee) + "</td>" +
+        "<td>" + renderBudgetProgressCell(row.budgetAmount, row.spentAmount) + "</td>" +
         "</tr>";
     });
     html += "</tbody></table>";

@@ -278,6 +278,12 @@ thead th {
   letter-spacing: 0.2px;
 }
 
+.cc-money-col {
+  text-align: right;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
 thead th[data-sort] {
   cursor: pointer;
   user-select: none;
