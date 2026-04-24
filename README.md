@@ -11,10 +11,11 @@
 - **Team 多选筛选** — 支持下拉复选 Team，默认全选，可按 Team 过滤表格数据
 - **Premium Requests (%)** — 基于订阅计划额度计算（Business = 300 / Enterprise = 1000）
 - **费用估算** — 额度内显示订阅费（Business $19），超额按 $0.04/request 累加
-- **自动刷新** — 支持 5 / 15 / 30 / 60 秒定时自动刷新
-- **服务端缓存** — 相同查询在缓存时间内直接返回，减少 API 延迟影响
+- **平滑刷新体验** — 采用 SWR (Stale-While-Revalidate) 缓存策略，刷新时优先显示缓存并后台静默更新，配合骨架屏 (Skeleton Screen) 消除长时间白屏的感知等待。
+- **防止限流与并发控制** — 内置 GitHub API 调用并发队列和请求防抖 (Single-flight)；遇到 API 速率限制 (Rate Limit) 时会自动进行指数退避重试，向前端返回友好的恢复时间提示。
+- **分批渲染大表** — 处理海量用量数据时采用 requestAnimationFrame 进行 chunked 渲染，避免卡死浏览器主线程。
 - **排序** — 全部表格列支持升序/降序点击排序
-- **用户 & Team 信息** — 查看 Enterprise Teams（名称、描述），点击展开查看 Team 成员
+- **用户 & Team 信息** — 查看 Enterprise Teams（名称、描述、成员数），点击展开查看 Team 成员
 - **整体账单汇总** — 席位订阅费 + Premium Requests 超额计算 + 费用合计
 - **模型使用排行** — 按月查看各 AI 模型的请求量和费用占比
 - **启动前自检** — 提供 Shell 与 Node 两版 preflight 脚本用于权限和连通性检查
@@ -27,8 +28,8 @@
   - 最多同时显示 5 个数字页码，超出时以省略号分隔（`上一页 1 ... 3 4 5 ... 8 下一页`）
   - 第一页不显示”上一页”按钮，最后一页不显示”下一页”按钮
   - 排序、筛选、刷新时自动回到第 1 页
-- **用户映射管理** — 上传 Excel（`.xlsx` / `.xls`）映射表，将 GitHub 用户名关联到 AD 用户名
-- **AD 名显示** — 已映射用户在首页用量排行中优先显示 AD 用户名，未映射用户仍显示 GitHub 用户名
+- **用户映射管理** — 上传 Excel（`.xlsx` / `.xls`）映射表，将 GitHub 用户名关联到展示名称
+- **自定义名称显示** — 已映射用户在首页用量排行中优先显示自定义名称，未映射用户仍显示 GitHub 登录名
 - **映射状态可视化** — 用户映射管理页中每行显示 已映射/未映射 标签，支持一键刷新成员列表
 - **自动热重载映射** — 映射文件变更时，内存中的数据自动同步，无需重启服务
 
@@ -146,8 +147,10 @@ node ./scripts/preflight-check.js --strict
 | `PRODUCT` | 否 | 产品过滤，默认 `Copilot` |
 | `MODEL` | 否 | 可选，按模型过滤 |
 | `INCLUDED_QUOTA` | 否 | 每用户每周期包含请求配额，默认 `300`，用于进度条基线和百分比计算 |
-| `CACHE_TTL` | 否 | API 响应缓存时长（秒），默认 `300`（5 分钟），缓存期内相同查询直接返回缓存 |
-| `GITHUB_API_BASE` | 否 | API 地址，默认 `https://api.github.com`（GHE.com 需替换） |
+| `CACHE_TTL` | 否 | API 响应在前端的缓存时长（秒），默认 `300`（5 分钟），缓存期内采用 SWR 策略无缝展示 |
+| `GITHUB_MAX_CONCURRENT` | 否 | GitHub API 并发请求上限，默认 `3`，防止因瞬时并发触发 Secondary Rate Limit |
+| `GITHUB_MAX_RETRIES` | 否 | GitHub API 请求遇错和被限流时的最大重试次数，默认 `3` |
+| `GITHUB_API_BASE` | 否 | API 地址，默认 `https://api.github.com` |
 | `PORT` | 否 | 服务端口，默认 `3000` |
 
 ## 自检脚本说明

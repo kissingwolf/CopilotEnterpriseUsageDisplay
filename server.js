@@ -192,78 +192,222 @@ function buildEndpoint() {
   throw new Error("Please set ENTERPRISE_SLUG or ORG_NAME in .env");
 }
 
-async function githubRequestJson(method, pathname, searchParams, body) {
-  const token = requiredEnv("GITHUB_TOKEN");
-  if (!token) {
-    throw new Error("Missing GITHUB_TOKEN in .env");
+/* ── GitHub API infrastructure: concurrency queue + retry/backoff + GET cache + single-flight ── */
+
+const MAX_CONCURRENT_GITHUB = Math.max(1, Number(process.env.GITHUB_MAX_CONCURRENT || 3));
+const MAX_GITHUB_RETRIES = Math.max(0, Number(process.env.GITHUB_MAX_RETRIES || 3));
+const MAX_RETRY_WAIT_MS = 60 * 1000;
+
+let githubRunning = 0;
+const githubQueue = [];
+
+function acquireGithubSlot() {
+  if (githubRunning < MAX_CONCURRENT_GITHUB) {
+    githubRunning += 1;
+    return Promise.resolve();
   }
-
-  const apiBase = requiredEnv("GITHUB_API_BASE") || "https://api.github.com";
-  const query = searchParams ? searchParams.toString() : "";
-  const url = `${apiBase}${pathname}${query ? `?${query}` : ""}`;
-
-  const resp = await fetch(url, {
-    method,
-    headers: {
-      Accept: "application/vnd.github+json",
-      Authorization: `Bearer ${token}`,
-      "X-GitHub-Api-Version": "2026-03-10",
-      ...(body ? { "Content-Type": "application/json" } : {}),
-    },
-    ...(body ? { body: JSON.stringify(body) } : {}),
+  return new Promise((resolve) => {
+    githubQueue.push(resolve);
+  }).then(() => {
+    githubRunning += 1;
   });
+}
 
-  const text = await resp.text();
-  let data = null;
-  const limit = Number(resp.headers.get("x-ratelimit-limit") || 0);
-  const remaining = Number(resp.headers.get("x-ratelimit-remaining") || 0);
-  const resetEpoch = Number(resp.headers.get("x-ratelimit-reset") || 0);
-  const resetAt = resetEpoch ? new Date(resetEpoch * 1000).toISOString() : null;
+function releaseGithubSlot() {
+  githubRunning = Math.max(0, githubRunning - 1);
+  const next = githubQueue.shift();
+  if (next) next();
+}
 
-  try {
-    data = text ? JSON.parse(text) : null;
-  } catch {
-    data = { raw: text };
+let lastRateLimit = { limit: 0, remaining: 0, resetAt: null, updatedAt: null };
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+const githubGetCache = new Map(); // key -> { ts, data }
+const githubInflight = new Map(); // key -> Promise
+
+function buildCacheKey(method, pathname, searchParams) {
+  const qs = searchParams
+    ? Array.from(new URLSearchParams(searchParams.toString()))
+        .sort((a, b) => a[0].localeCompare(b[0]))
+        .map(([k, v]) => `${k}=${v}`)
+        .join("&")
+    : "";
+  return `${method} ${pathname}?${qs}`;
+}
+
+function ttlForPath(pathname) {
+  if (/copilot\/billing\/seats/.test(pathname)) return 10 * 60 * 1000;
+  if (/\/memberships(\b|\?|$)/.test(pathname)) return 10 * 60 * 1000;
+  if (/\/teams(\/|\?|$)/.test(pathname)) return 10 * 60 * 1000;
+  if (/\/budgets(\b|\?|$)/.test(pathname)) return 15 * 60 * 1000;
+  if (/premium_request\/usage/.test(pathname)) return 3 * 60 * 1000;
+  if (/\/billing\/usage\/summary/.test(pathname)) return 3 * 60 * 1000;
+  if (/\/billing\/usage(\b|\?|$)/.test(pathname)) return 3 * 60 * 1000;
+  if (/cost-centers/.test(pathname)) return 3 * 60 * 1000;
+  return 0;
+}
+
+function invalidateCacheByPrefix(prefix) {
+  for (const key of Array.from(githubGetCache.keys())) {
+    if (key.includes(prefix)) githubGetCache.delete(key);
   }
+}
 
-  if (!resp.ok) {
-    const msg = data && data.message ? data.message : "GitHub API request failed";
-    const isRateLimited =
-      resp.status === 429 ||
-      remaining === 0 ||
-      /rate limit/i.test(String(msg));
+function parseLastPageFromLink(linkHeader) {
+  if (!linkHeader) return null;
+  const match = linkHeader.match(/<[^>]*[?&]page=(\d+)[^>]*>;\s*rel="last"/);
+  return match ? Number(match[1]) : null;
+}
 
-    if (isRateLimited) {
-      throw new ApiError(
-        "GitHub API 速率限制已触发，请稍后再试。",
-        429,
-        {
-          rateLimit: {
-            limit,
-            remaining,
-            resetAt,
-            limitExceeded: true,
-          },
-        }
-      );
+async function githubFetchRaw(method, pathname, searchParams, body) {
+  await acquireGithubSlot();
+  try {
+    const token = requiredEnv("GITHUB_TOKEN");
+    if (!token) throw new ApiError("Missing GITHUB_TOKEN in .env", 500);
+
+    const apiBase = requiredEnv("GITHUB_API_BASE") || "https://api.github.com";
+    const query = searchParams ? searchParams.toString() : "";
+    const url = `${apiBase}${pathname}${query ? `?${query}` : ""}`;
+
+    const resp = await fetch(url, {
+      method,
+      headers: {
+        Accept: "application/vnd.github+json",
+        Authorization: `Bearer ${token}`,
+        "X-GitHub-Api-Version": "2026-03-10",
+        ...(body ? { "Content-Type": "application/json" } : {}),
+      },
+      ...(body ? { body: JSON.stringify(body) } : {}),
+    });
+
+    const text = await resp.text();
+    let data = null;
+    try {
+      data = text ? JSON.parse(text) : null;
+    } catch {
+      data = { raw: text };
     }
 
-    throw new ApiError(`${resp.status} ${resp.statusText}: ${msg}`, resp.status);
+    const limit = Number(resp.headers.get("x-ratelimit-limit") || 0);
+    const remaining = Number(resp.headers.get("x-ratelimit-remaining") || 0);
+    const resetEpoch = Number(resp.headers.get("x-ratelimit-reset") || 0);
+    const resetAt = resetEpoch ? new Date(resetEpoch * 1000).toISOString() : null;
+
+    if (limit || remaining || resetAt) {
+      lastRateLimit = { limit, remaining, resetAt, updatedAt: new Date().toISOString() };
+    }
+
+    return {
+      status: resp.status,
+      ok: resp.ok,
+      statusText: resp.statusText,
+      data,
+      headers: resp.headers,
+      rateLimit: { limit, remaining, resetAt },
+    };
+  } finally {
+    releaseGithubSlot();
+  }
+}
+
+async function githubRequest(method, pathname, searchParams, body, opts = {}) {
+  const withHeaders = Boolean(opts.withHeaders);
+  let lastError = null;
+
+  for (let attempt = 1; attempt <= MAX_GITHUB_RETRIES + 1; attempt += 1) {
+    const result = await githubFetchRaw(method, pathname, searchParams, body);
+
+    if (result.ok) {
+      return withHeaders
+        ? { data: result.data, headers: result.headers, rateLimit: result.rateLimit }
+        : result.data;
+    }
+
+    const msg = result.data && result.data.message ? result.data.message : "GitHub API request failed";
+    const isPrimaryLimited = result.status === 429;
+    const isSecondaryLimited =
+      result.status === 403 && /secondary rate limit|rate limit/i.test(String(msg));
+    const isQuotaZero = result.rateLimit.remaining === 0 && result.status === 403;
+    const isRateLimited = isPrimaryLimited || isSecondaryLimited || isQuotaZero;
+    const is5xx = result.status >= 500 && result.status < 600;
+
+    if ((isRateLimited || is5xx) && attempt <= MAX_GITHUB_RETRIES) {
+      const retryAfterSec = Number(result.headers.get("retry-after") || 0);
+      let waitMs;
+      if (retryAfterSec > 0) {
+        waitMs = retryAfterSec * 1000;
+      } else if (isRateLimited && result.rateLimit.resetAt) {
+        waitMs = Math.max(0, new Date(result.rateLimit.resetAt).getTime() - Date.now());
+      } else {
+        waitMs = Math.min(2 ** attempt * 500, 8000);
+      }
+      waitMs = Math.min(waitMs, MAX_RETRY_WAIT_MS);
+      console.warn(
+        `[github] ${method} ${pathname} -> ${result.status}; retry #${attempt} in ${waitMs}ms (remaining=${result.rateLimit.remaining})`
+      );
+      await sleep(waitMs);
+      lastError = new ApiError(msg, result.status, {
+        rateLimit: { ...result.rateLimit, limitExceeded: isRateLimited },
+      });
+      continue;
+    }
+
+    if (isRateLimited) {
+      throw new ApiError("GitHub API 速率限制已触发，请稍后再试。", 429, {
+        rateLimit: { ...result.rateLimit, limitExceeded: true },
+      });
+    }
+    throw new ApiError(`${result.status} ${result.statusText}: ${msg}`, result.status);
   }
 
-  return data;
+  throw lastError || new ApiError("GitHub API request failed after retries", 500);
 }
 
 async function githubGetJson(pathname, searchParams) {
-  return githubRequestJson("GET", pathname, searchParams);
+  const ttl = ttlForPath(pathname);
+  const key = buildCacheKey("GET", pathname, searchParams);
+
+  if (ttl > 0) {
+    const hit = githubGetCache.get(key);
+    if (hit && Date.now() - hit.ts < ttl) return hit.data;
+  }
+
+  if (githubInflight.has(key)) return githubInflight.get(key);
+
+  const promise = githubRequest("GET", pathname, searchParams)
+    .then((data) => {
+      if (ttl > 0) githubGetCache.set(key, { ts: Date.now(), data });
+      return data;
+    })
+    .finally(() => {
+      githubInflight.delete(key);
+    });
+
+  githubInflight.set(key, promise);
+  return promise;
+}
+
+async function githubGetWithHeaders(pathname, searchParams) {
+  return githubRequest("GET", pathname, searchParams, undefined, { withHeaders: true });
 }
 
 async function githubPostJson(pathname, body) {
-  return githubRequestJson("POST", pathname, undefined, body);
+  const data = await githubRequest("POST", pathname, undefined, body);
+  invalidateCacheByPrefix("settings/billing/cost-centers");
+  return data;
 }
 
 async function githubDeleteJson(pathname, body) {
-  return githubRequestJson("DELETE", pathname, undefined, body);
+  const data = await githubRequest("DELETE", pathname, undefined, body);
+  invalidateCacheByPrefix("settings/billing/cost-centers");
+  return data;
+}
+
+async function githubRequestJson(method, pathname, searchParams, body) {
+  return githubRequest(method, pathname, searchParams, body);
 }
 
 async function fetchUsageFromGitHub(dateOverride) {
@@ -797,6 +941,32 @@ app.get("/api/teams", (_req, res) => {
   });
 });
 
+/* Fetch a team's total member count via the Link header trick (per_page=1). */
+async function fetchEnterpriseTeamMemberCount(enterprise, teamId) {
+  const pathname = `/enterprises/${encodeURIComponent(enterprise)}/teams/${teamId}/memberships`;
+  const params = new URLSearchParams({ per_page: "1", page: "1" });
+  const { data, headers } = await githubGetWithHeaders(pathname, params);
+  const lastPage = parseLastPageFromLink(headers.get("link"));
+  if (lastPage && Number.isFinite(lastPage)) return lastPage;
+  return Array.isArray(data) ? data.length : 0;
+}
+
+const teamMemberCountCache = new Map(); // teamId -> { ts, count }
+const TEAM_MEMBER_COUNT_TTL = 10 * 60 * 1000;
+
+async function getTeamMemberCountCached(enterprise, teamId) {
+  const key = String(teamId);
+  const hit = teamMemberCountCache.get(key);
+  if (hit && Date.now() - hit.ts < TEAM_MEMBER_COUNT_TTL) return hit.count;
+  try {
+    const count = await fetchEnterpriseTeamMemberCount(enterprise, teamId);
+    teamMemberCountCache.set(key, { ts: Date.now(), count });
+    return count;
+  } catch {
+    return null;
+  }
+}
+
 /* Enterprise Teams with descriptions */
 app.get("/api/enterprise-teams", async (_req, res) => {
   try {
@@ -807,13 +977,22 @@ app.get("/api/enterprise-teams", async (_req, res) => {
       new URLSearchParams({ per_page: "100" })
     );
     const teams = Array.isArray(raw) ? raw : [];
+
+    const counts = await Promise.all(
+      teams.map((t) => getTeamMemberCountCached(endpoint.enterprise, t.id))
+    );
+
     res.json({
       ok: true,
-      teams: teams.map((t) => ({
+      teams: teams.map((t, idx) => ({
         id: t.id,
         name: t.name,
         slug: t.slug,
         description: t.description || "",
+        membersCount:
+          typeof t.members_count === "number"
+            ? t.members_count
+            : counts[idx] != null ? counts[idx] : null,
         createdAt: t.created_at || null,
         htmlUrl: t.html_url || "",
       })),
@@ -823,25 +1002,37 @@ app.get("/api/enterprise-teams", async (_req, res) => {
   }
 });
 
-/* Enterprise Team members */
+/* Enterprise Team members — paginated to fetch ALL */
 app.get("/api/enterprise-teams/:teamId/members", async (req, res) => {
   try {
     const endpoint = buildEndpoint();
     if (endpoint.kind !== "enterprise") throw new Error("Enterprise mode required");
     const teamId = req.params.teamId;
     if (!/^\d+$/.test(teamId)) throw new Error("Invalid team ID");
-    const raw = await githubGetJson(
-      `/enterprises/${encodeURIComponent(endpoint.enterprise)}/teams/${teamId}/memberships`,
-      new URLSearchParams({ per_page: "100" })
-    );
-    const members = Array.isArray(raw) ? raw : [];
+
+    const allMembers = [];
+    let page = 1;
+    while (true) {
+      const raw = await githubGetJson(
+        `/enterprises/${encodeURIComponent(endpoint.enterprise)}/teams/${teamId}/memberships`,
+        new URLSearchParams({ per_page: "100", page: String(page) })
+      );
+      const batch = Array.isArray(raw) ? raw : [];
+      for (const m of batch) {
+        allMembers.push({
+          login: m.login || "",
+          avatarUrl: m.avatar_url || "",
+          htmlUrl: m.html_url || "",
+        });
+      }
+      if (batch.length < 100) break;
+      page += 1;
+    }
+
     res.json({
       ok: true,
-      members: members.map((m) => ({
-        login: m.login,
-        avatarUrl: m.avatar_url || "",
-        htmlUrl: m.html_url || "",
-      })),
+      totalMembers: allMembers.length,
+      members: allMembers,
     });
   } catch (error) {
     writeError(res, error);

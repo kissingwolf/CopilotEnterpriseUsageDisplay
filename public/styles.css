@@ -588,8 +588,8 @@ tbody tr:hover {
 }
 .team-card-header {
   display: flex;
-  justify-content: space-between;
   align-items: center;
+  gap: 8px;
   cursor: pointer;
 }
 .team-name-link {
@@ -598,7 +598,17 @@ tbody tr:hover {
   font-size: 15px;
 }
 .team-name-link:hover { text-decoration: underline; }
+.team-member-count {
+  font-size: 12px;
+  color: var(--muted);
+  background: #f0faf5;
+  border: 1px solid #d5eadf;
+  border-radius: 999px;
+  padding: 2px 8px;
+  white-space: nowrap;
+}
 .team-toggle {
+  margin-left: auto;
   font-size: 12px;
   color: var(--muted);
   transition: transform 0.2s;
