@@ -550,6 +550,10 @@ async function refresh(options) {
       body: JSON.stringify(body),
     }, "\u5237\u65b0\u5931\u8d25");
     render(data);
+    if (data && data.cacheHitRatio !== undefined) {
+      meta.textContent += " | \u7f13\u5b58\u547d\u4e2d " + data.cacheHitRatio + "%";
+      latestMetaText = meta.textContent;
+    }
     setCachedData(key, data);
   } catch (err) {
     setError(err instanceof Error ? err.message : String(err));

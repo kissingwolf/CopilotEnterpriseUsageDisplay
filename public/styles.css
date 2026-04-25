@@ -987,3 +987,80 @@ tbody tr:hover {
   font-size: 13px;
   color: var(--muted);
 }
+
+/* ── Analytics page ── */
+.summary-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 12px;
+  padding: 16px 24px;
+  border-bottom: 1px solid var(--line);
+}
+
+.summary-card {
+  background: #f8f6ef;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 14px 16px;
+  text-align: center;
+}
+
+.summary-card .label {
+  font-size: 12px;
+  color: var(--muted);
+  margin-bottom: 4px;
+}
+
+.summary-card .value {
+  font-size: 20px;
+  font-weight: 700;
+  color: var(--ink);
+}
+
+/* Analytics tabs */
+.analytics-tabs {
+  display: flex;
+  gap: 0;
+  padding: 12px 24px 0;
+  border-bottom: 2px solid var(--line);
+}
+
+.analytics-tab {
+  padding: 8px 20px;
+  border: none;
+  background: none;
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--muted);
+  border-bottom: 2px solid transparent;
+  margin-bottom: -2px;
+  transition: color 0.2s, border-color 0.2s;
+}
+
+.analytics-tab:hover {
+  color: var(--accent);
+}
+
+.analytics-tab.active {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+}
+
+.analytics-pane {
+  display: none;
+}
+
+.analytics-pane.active {
+  display: block;
+}
+
+/* Chart containers */
+.chart-container {
+  padding: 20px 24px;
+  min-height: 300px;
+}
+
+.chart-container canvas {
+  max-width: 100%;
+}

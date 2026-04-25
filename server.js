@@ -5,6 +5,7 @@ const multer = require("multer");
 const xlsx = require("xlsx");
 const fs = require("fs");
 const UserMappingService = require("./lib/user-mapping");
+const { UsageStore, USAGE_TTL_MS, SEATS_TTL_MS } = require("./lib/usage-store");
 
 dotenv.config();
 
@@ -16,6 +17,16 @@ app.use(express.static(path.join(__dirname, "public")));
 
 // ── User mapping service (singleton, auto-watches data/user_mapping.json) ──
 const userMappingService = new UserMappingService();
+
+// ── SQLite usage store (persistent cache) ──
+const usageStore = new UsageStore();
+
+/* Restore persisted ETags into memory cache */
+const persistedEtags = usageStore.loadAllEtags();
+for (const [key, entry] of Object.entries(persistedEtags)) {
+  etagCache.set(key, { etag: entry.etag, data: entry.data, ts: new Date(entry.fetched_at).getTime() });
+}
+console.log(`Restored ${Object.keys(persistedEtags).length} ETag entries from SQLite.`);
 
 // ── Multer config for file uploads ──
 const uploadStorage = multer.diskStorage({
@@ -227,6 +238,7 @@ function sleep(ms) {
 
 const githubGetCache = new Map(); // key -> { ts, data }
 const githubInflight = new Map(); // key -> Promise
+const etagCache = new Map(); // key -> { etag, data, ts }
 
 function buildCacheKey(method, pathname, searchParams) {
   const qs = searchParams
@@ -262,7 +274,7 @@ function parseLastPageFromLink(linkHeader) {
   return match ? Number(match[1]) : null;
 }
 
-async function githubFetchRaw(method, pathname, searchParams, body) {
+async function githubFetchRaw(method, pathname, searchParams, body, opts = {}) {
   await acquireGithubSlot();
   try {
     const token = requiredEnv("GITHUB_TOKEN");
@@ -272,16 +284,30 @@ async function githubFetchRaw(method, pathname, searchParams, body) {
     const query = searchParams ? searchParams.toString() : "";
     const url = `${apiBase}${pathname}${query ? `?${query}` : ""}`;
 
-    const resp = await fetch(url, {
-      method,
-      headers: {
-        Accept: "application/vnd.github+json",
-        Authorization: `Bearer ${token}`,
-        "X-GitHub-Api-Version": "2026-03-10",
-        ...(body ? { "Content-Type": "application/json" } : {}),
-      },
-      ...(body ? { body: JSON.stringify(body) } : {}),
-    });
+    const headers = {
+      Accept: "application/vnd.github+json",
+      Authorization: `Bearer ${token}`,
+      "X-GitHub-Api-Version": "2026-03-10",
+    };
+    if (body) headers["Content-Type"] = "application/json";
+    if (opts.ifNoneMatch) headers["If-None-Match"] = opts.ifNoneMatch;
+
+    const resp = await fetch(url, { method, headers, ...(body ? { body: JSON.stringify(body) } : {}) });
+
+    const etag = resp.headers.get("etag") || null;
+
+    /* Handle 304 Not Modified */
+    if (resp.status === 304) {
+      return {
+        status: 304,
+        ok: true,
+        statusText: "Not Modified",
+        data: opts.cachedData,
+        headers: resp.headers,
+        rateLimit: { limit: 0, remaining: 0, resetAt: null },
+        etagNotModified: true,
+      };
+    }
 
     const text = await resp.text();
     let data = null;
@@ -300,6 +326,14 @@ async function githubFetchRaw(method, pathname, searchParams, body) {
       lastRateLimit = { limit, remaining, resetAt, updatedAt: new Date().toISOString() };
     }
 
+    /* Save ETag for GET requests with 200 status */
+    if (method === "GET" && resp.ok && etag) {
+      const now = new Date().toISOString();
+      const cacheKey = buildCacheKey(method, pathname, searchParams);
+      etagCache.set(cacheKey, { etag, data, ts: Date.now() });
+      try { usageStore.saveEtag(cacheKey, etag, data, now); } catch {}
+    }
+
     return {
       status: resp.status,
       ok: resp.ok,
@@ -307,6 +341,7 @@ async function githubFetchRaw(method, pathname, searchParams, body) {
       data,
       headers: resp.headers,
       rateLimit: { limit, remaining, resetAt },
+      etag,
     };
   } finally {
     releaseGithubSlot();
@@ -318,7 +353,18 @@ async function githubRequest(method, pathname, searchParams, body, opts = {}) {
   let lastError = null;
 
   for (let attempt = 1; attempt <= MAX_GITHUB_RETRIES + 1; attempt += 1) {
-    const result = await githubFetchRaw(method, pathname, searchParams, body);
+    const fetchOpts = {};
+    if (opts.ifNoneMatch) fetchOpts.ifNoneMatch = opts.ifNoneMatch;
+    if (opts.cachedData) fetchOpts.cachedData = opts.cachedData;
+
+    const result = await githubFetchRaw(method, pathname, searchParams, body, fetchOpts);
+
+    /* Handle 304 Not Modified */
+    if (result.etagNotModified) {
+      return withHeaders
+        ? { data: result.data, headers: result.headers, rateLimit: result.rateLimit }
+        : result.data;
+    }
 
     if (result.ok) {
       return withHeaders
@@ -377,7 +423,15 @@ async function githubGetJson(pathname, searchParams) {
 
   if (githubInflight.has(key)) return githubInflight.get(key);
 
-  const promise = githubRequest("GET", pathname, searchParams)
+  /* Build ETag request options */
+  const reqOpts = {};
+  const etagEntry = etagCache.get(key);
+  if (etagEntry) {
+    reqOpts.ifNoneMatch = etagEntry.etag;
+    reqOpts.cachedData = etagEntry.data;
+  }
+
+  const promise = githubRequest("GET", pathname, searchParams, undefined, reqOpts)
     .then((data) => {
       if (ttl > 0) githubGetCache.set(key, { ts: Date.now(), data });
       return data;
@@ -391,7 +445,24 @@ async function githubGetJson(pathname, searchParams) {
 }
 
 async function githubGetWithHeaders(pathname, searchParams) {
-  return githubRequest("GET", pathname, searchParams, undefined, { withHeaders: true });
+  const key = buildCacheKey("GET", pathname, searchParams);
+  const reqOpts = { withHeaders: true };
+  const etagEntry = etagCache.get(key);
+  if (etagEntry) {
+    reqOpts.ifNoneMatch = etagEntry.etag;
+    reqOpts.cachedData = etagEntry.data;
+  }
+  const result = await githubRequest("GET", pathname, searchParams, undefined, reqOpts);
+
+  /* If this was a 200 with an ETag, save it */
+  const etag = result.headers?.get?.("etag");
+  if (etag) {
+    const now = new Date().toISOString();
+    etagCache.set(key, { etag, data: result.data, ts: Date.now() });
+    usageStore.saveEtag(key, etag, result.data, now);
+  }
+
+  return result;
 }
 
 async function githubPostJson(pathname, body) {
@@ -479,14 +550,39 @@ function aggregateSingleUserUsage(payload) {
 }
 
 async function fetchCopilotSeats(enterprise) {
+  const seatsPath = `/enterprises/${encodeURIComponent(enterprise)}/copilot/billing/seats`;
+
+  /* Step 1: fetch page 1 with headers to get total page count */
+  const firstResp = await githubGetWithHeaders(
+    seatsPath,
+    new URLSearchParams({ per_page: "100", page: "1" })
+  );
+  const firstPageSeats = Array.isArray(firstResp.data?.seats) ? firstResp.data.seats : [];
   const seats = [];
-  let page = 1;
-  while (true) {
-    const data = await githubGetJson(
-      `/enterprises/${encodeURIComponent(enterprise)}/copilot/billing/seats`,
-      new URLSearchParams({ per_page: "100", page: String(page) })
-    );
-    const batch = Array.isArray(data?.seats) ? data.seats : [];
+  for (const seat of firstPageSeats) {
+    const login = seat?.assignee?.login;
+    if (typeof login === "string" && login.trim()) {
+      const teamObj = seat.assigning_team;
+      seats.push({
+        login: login.trim(),
+        team: teamObj?.name || "-",
+        planType: seat.plan_type || "-",
+        lastActivityAt: seat.last_activity_at || null,
+        lastActivityEditor: seat.last_activity_editor || "-",
+        createdAt: seat.created_at || null,
+      });
+    }
+  }
+
+  /* Step 2: parse total pages from Link header */
+  const lastPage = parseLastPageFromLink(firstResp.headers?.get?.("link"));
+  if (!lastPage || lastPage <= 1) return seats;
+
+  /* Step 3: fetch remaining pages in parallel chunks */
+  const pageNumbers = [];
+  for (let p = 2; p <= lastPage; p += 1) pageNumbers.push(p);
+
+  function processBatch(batch) {
     for (const seat of batch) {
       const login = seat?.assignee?.login;
       if (typeof login === "string" && login.trim()) {
@@ -501,14 +597,48 @@ async function fetchCopilotSeats(enterprise) {
         });
       }
     }
-    if (batch.length < 100) break;
-    page += 1;
   }
+
+  for (let i = 0; i < pageNumbers.length; i += MAX_CONCURRENT_GITHUB) {
+    const chunk = pageNumbers.slice(i, i + MAX_CONCURRENT_GITHUB);
+    const results = await Promise.all(
+      chunk.map(async (page) => {
+        const data = await githubGetJson(
+          seatsPath,
+          new URLSearchParams({ per_page: "100", page: String(page) })
+        );
+        return Array.isArray(data?.seats) ? data.seats : [];
+      })
+    );
+    for (const batch of results) processBatch(batch);
+  }
+
   return seats;
 }
 
 async function ensureSeatsData(forceRefresh = false) {
   if (!forceRefresh && teamCache.fetchedAt) return;
+
+  /* Try to restore from SQLite */
+  if (!forceRefresh) {
+    const snapshot = usageStore.getLatestSeatsSnapshot();
+    if (snapshot && Date.now() - new Date(snapshot.fetched_at).getTime() < SEATS_TTL_MS) {
+      const seats = snapshot.data;
+      const map = {};
+      for (const s of seats) {
+        if (!map[s.login]) map[s.login] = [];
+        if (s.team !== "-" && !map[s.login].includes(s.team)) {
+          map[s.login].push(s.team);
+        }
+      }
+      teamCache.userTeamMap = map;
+      teamCache.seatsRaw = seats;
+      teamCache.fetchedAt = snapshot.fetched_at;
+      console.log(`Restored ${seats.length} Copilot seats from SQLite cache.`);
+      return;
+    }
+  }
+
   try {
     const endpoint = buildEndpoint();
     if (endpoint.kind !== "enterprise") return;
@@ -523,6 +653,7 @@ async function ensureSeatsData(forceRefresh = false) {
     teamCache.userTeamMap = map;
     teamCache.seatsRaw = seats;
     teamCache.fetchedAt = new Date().toISOString();
+    usageStore.saveSeatsSnapshot(seats, teamCache.fetchedAt);
     console.log(`Loaded ${seats.length} Copilot seats, ${Object.keys(map).length} users mapped to teams.`);
   } catch (e) {
     console.error("Failed to fetch Copilot seats:", e.message);
@@ -667,9 +798,34 @@ async function refreshForDateOverride(dateOverride) {
   const cacheKey = JSON.stringify(dateOverride || {});
   const cached = refreshCache.get(cacheKey);
   if (cached && Date.now() - cached.ts < CACHE_TTL) {
-    return cached.result;
+    return { result: cached.result, cacheHit: "memory" };
   }
 
+  /* Build date key from override */
+  const now = new Date();
+  const year = dateOverride?.year || Number(requiredEnv("BILLING_YEAR")) || now.getFullYear();
+  const month = dateOverride?.month || Number(requiredEnv("BILLING_MONTH")) || (now.getMonth() + 1);
+  const day = dateOverride?.day;
+  const dateKey = day
+    ? `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`
+    : `${year}-${String(month).padStart(2, "0")}`;
+
+  /* Check SQLite cache */
+  if (day) {
+    const cachedDay = usageStore.getDay(dateKey);
+    if (cachedDay && Date.now() - new Date(cachedDay.fetched_at).getTime() < USAGE_TTL_MS) {
+      const result = {
+        ranking: aggregateRanking(cachedDay.data),
+        mode: cachedDay.mode,
+        rawItemsCount: cachedDay.raw_count,
+        source: cachedDay.source,
+      };
+      refreshCache.set(cacheKey, { ts: Date.now(), result });
+      return { result, cacheHit: "sqlite" };
+    }
+  }
+
+  /* Fetch from GitHub */
   const { data, endpoint } = await fetchUsageFromGitHub(dateOverride);
   let ranking = aggregateRanking(data);
   let mode = "direct";
@@ -686,8 +842,13 @@ async function refreshForDateOverride(dateOverride) {
     source: endpoint.scope,
   };
 
+  /* Persist to SQLite */
+  if (day) {
+    usageStore.saveDay(dateKey, year, month, day, data, mode, result.rawItemsCount, endpoint.scope, new Date().toISOString());
+  }
+
   refreshCache.set(cacheKey, { ts: Date.now(), result });
-  return result;
+  return { result, cacheHit: "github" };
 }
 
 function mergeRankings(list) {
@@ -716,6 +877,8 @@ app.post("/api/usage/refresh", async (req, res) => {
 
     const { queryMode, date, startDate, endDate } = req.body || {};
     let ranking, mode, rawItemsCount, source, dateLabel;
+    let cacheHits = 0;
+    let totalDaysQueried = 0;
 
     if (queryMode === "range" && startDate && endDate) {
       const days = enumerateDays(startDate, endDate);
@@ -727,12 +890,20 @@ app.post("/api/usage/refresh", async (req, res) => {
       let lastMode = "direct";
       let lastSource = "";
 
-      for (const d of days) {
-        const result = await refreshForDateOverride(d);
-        allRankings.push(result.ranking);
-        totalRaw += result.rawItemsCount;
-        lastMode = result.mode;
-        lastSource = result.source;
+      /* Fetch days in concurrent chunks */
+      for (let i = 0; i < days.length; i += MAX_CONCURRENT_GITHUB) {
+        const chunk = days.slice(i, i + MAX_CONCURRENT_GITHUB);
+        const chunkResults = await Promise.all(
+          chunk.map((d) => refreshForDateOverride(d))
+        );
+        for (const { result, cacheHit } of chunkResults) {
+          allRankings.push(result.ranking);
+          totalRaw += result.rawItemsCount;
+          lastMode = result.mode;
+          lastSource = result.source;
+          totalDaysQueried += 1;
+          if (cacheHit === "memory" || cacheHit === "sqlite") cacheHits += 1;
+        }
       }
 
       ranking = mergeRankings(allRankings);
@@ -744,10 +915,15 @@ app.post("/api/usage/refresh", async (req, res) => {
       const d = parseDateStr(date);
       if (!d) throw new Error("无效的日期格式，请使用 YYYY-MM-DD");
 
-      const [dailyResult, cycleResult] = await Promise.all([
+      const [dailyResp, cycleResp] = await Promise.all([
         refreshForDateOverride(d),
         refreshForDateOverride({ year: d.year, month: d.month }),
       ]);
+      const dailyResult = dailyResp.result;
+      const cycleResult = cycleResp.result;
+      totalDaysQueried = 2;
+      if (dailyResp.cacheHit !== "github") cacheHits += 1;
+      if (cycleResp.cacheHit !== "github") cacheHits += 1;
 
       const cycleMap = new Map();
       for (const row of cycleResult.ranking) {
@@ -764,7 +940,10 @@ app.post("/api/usage/refresh", async (req, res) => {
       source = dailyResult.source;
       dateLabel = date;
     } else {
-      const result = await refreshForDateOverride({});
+      const resp = await refreshForDateOverride({});
+      const result = resp.result;
+      totalDaysQueried = 1;
+      if (resp.cacheHit !== "github") cacheHits = 1;
       ranking = result.ranking;
       mode = result.mode;
       rawItemsCount = result.rawItemsCount;
@@ -798,6 +977,7 @@ app.post("/api/usage/refresh", async (req, res) => {
       queryMode: state.queryMode,
       ranking: state.ranking,
       includedQuota: INCLUDED_QUOTA,
+      cacheHitRatio: totalDaysQueried > 0 ? Math.round((cacheHits / totalDaysQueried) * 100) : 0,
     });
   } catch (error) {
     writeError(res, error);
@@ -1530,6 +1710,125 @@ app.get("/api/user/info", (req, res) => {
     res.json({ ok: true, githubName: mapped.githubName, adName: mapped.adName, adMail: mapped.adMail, githubMail: mapped.githubMail });
   } else {
     res.json({ ok: false, message: "未找到映射记录", githubName });
+  }
+});
+
+// ── Analytics page ──
+app.get("/analytics", (_req, res) => {
+  res.sendFile(path.join(__dirname, "public", "analytics.html"));
+});
+
+// ── Analytics API: daily trend ──
+app.get("/api/analytics/trends", async (req, res) => {
+  try {
+    const range = Number(req.query.range) || 30;
+    if (![30, 90, 365].includes(range)) {
+      return res.status(400).json({ ok: false, message: "range must be 30, 90, or 365" });
+    }
+    const endDate = new Date();
+    const startDate = new Date(endDate);
+    startDate.setDate(startDate.getDate() - range + 1);
+    const startStr = startDate.toISOString().slice(0, 10);
+    const endStr = endDate.toISOString().slice(0, 10);
+
+    const days = usageStore.getDaysInRange(startStr, endStr);
+    const trend = days.map(function (d) {
+      var payload = typeof d.data === "string" ? JSON.parse(d.data) : d.data;
+      var usageItems = Array.isArray(payload?.usageItems) ? payload.usageItems : [];
+      var requests = 0;
+      var amount = 0;
+      for (var i = 0; i < usageItems.length; i += 1) {
+        var item = usageItems[i];
+        requests += toNumber(item.netQuantity) || toNumber(item.grossQuantity) || toNumber(item.quantity) || toNumber(item.requests);
+        amount += toNumber(item.netAmount) || toNumber(item.grossAmount) || toNumber(item.amount);
+      }
+      return { date: d.date, requests: Math.round(requests * 100) / 100, amount: Math.round(amount * 10000) / 10000 };
+    });
+
+    res.json({ ok: true, range: range, trend: trend, cachedCount: trend.length });
+  } catch (error) {
+    writeError(res, error);
+  }
+});
+
+// ── Analytics API: top users ──
+app.get("/api/analytics/top-users", async (req, res) => {
+  try {
+    const range = Number(req.query.range) || 30;
+    const endDate = new Date();
+    const startDate = new Date(endDate);
+    startDate.setDate(startDate.getDate() - range + 1);
+    const startStr = startDate.toISOString().slice(0, 10);
+    const endStr = endDate.toISOString().slice(0, 10);
+
+    const days = usageStore.getDaysInRange(startStr, endStr);
+    var byUser = new Map();
+    for (var di = 0; di < days.length; di += 1) {
+      var d = days[di];
+      var payload = typeof d.data === "string" ? JSON.parse(d.data) : d.data;
+      var usageItems = Array.isArray(payload?.usageItems) ? payload.usageItems : [];
+      for (var ii = 0; ii < usageItems.length; ii += 1) {
+        var item = usageItems[ii];
+        var user = pickUser(item);
+        var requests = toNumber(item.netQuantity) || toNumber(item.grossQuantity) || toNumber(item.quantity) || toNumber(item.requests);
+        var amount = toNumber(item.netAmount) || toNumber(item.grossAmount) || toNumber(item.amount);
+        var cur = byUser.get(user) || { user: user, requests: 0, amount: 0 };
+        cur.requests += requests;
+        cur.amount += amount;
+        byUser.set(user, cur);
+      }
+    }
+
+    var top = Array.from(byUser.values())
+      .sort(function (a, b) { return b.requests - a.requests; })
+      .slice(0, 20)
+      .map(function (row, idx) { return { rank: idx + 1, user: row.user, requests: Math.round(row.requests * 100) / 100, amount: Math.round(row.amount * 10000) / 10000 }; });
+
+    res.json({ ok: true, range: range, topUsers: top });
+  } catch (error) {
+    writeError(res, error);
+  }
+});
+
+// ── Analytics API: daily summary ──
+app.get("/api/analytics/daily-summary", async (req, res) => {
+  try {
+    const range = Number(req.query.range) || 30;
+    const endDate = new Date();
+    const startDate = new Date(endDate);
+    startDate.setDate(startDate.getDate() - range + 1);
+    const startStr = startDate.toISOString().slice(0, 10);
+    const endStr = endDate.toISOString().slice(0, 10);
+
+    const days = usageStore.getDaysInRange(startStr, endStr);
+    var totalRequests = 0;
+    var totalAmount = 0;
+    var daysWithData = 0;
+    for (var di = 0; di < days.length; di += 1) {
+      var d = days[di];
+      var payload = typeof d.data === "string" ? JSON.parse(d.data) : d.data;
+      var usageItems = Array.isArray(payload?.usageItems) ? payload.usageItems : [];
+      if (usageItems.length === 0) continue;
+      daysWithData += 1;
+      for (var ii = 0; ii < usageItems.length; ii += 1) {
+        var item = usageItems[ii];
+        totalRequests += toNumber(item.netQuantity) || toNumber(item.grossQuantity) || toNumber(item.quantity) || toNumber(item.requests);
+        totalAmount += toNumber(item.netAmount) || toNumber(item.grossAmount) || toNumber(item.amount);
+      }
+    }
+
+    res.json({
+      ok: true,
+      range: range,
+      totalRequests: Math.round(totalRequests * 100) / 100,
+      totalAmount: Math.round(totalAmount * 10000) / 10000,
+      avgDailyRequests: daysWithData > 0 ? Math.round(totalRequests / daysWithData * 100) / 100 : 0,
+      avgDailyAmount: daysWithData > 0 ? Math.round(totalAmount / daysWithData * 10000) / 10000 : 0,
+      daysWithData: daysWithData,
+      totalDaysInRange: days.length,
+    });
+  } catch (error) {
+    writeError(res, error);
   }
 });
 
