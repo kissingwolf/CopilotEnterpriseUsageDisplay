@@ -21,6 +21,9 @@ const userMappingService = new UserMappingService();
 // ── SQLite usage store (persistent cache) ──
 const usageStore = new UsageStore();
 
+// ── ETag cache (must be declared before restore logic below) ──
+const etagCache = new Map(); // key -> { etag, data, ts }
+
 /* Restore persisted ETags into memory cache */
 const persistedEtags = usageStore.loadAllEtags();
 for (const [key, entry] of Object.entries(persistedEtags)) {
@@ -97,6 +100,7 @@ class ApiError extends Error {
 
 const CACHE_TTL = (Number(requiredEnv("CACHE_TTL")) || 300) * 1000; // ms
 const refreshCache = new Map(); // key -> { ts, result }
+const refreshInFlight = new Map(); // key -> Promise<{ result, cacheHit }>
 
 const teamCache = {
   userTeamMap: {},
@@ -238,7 +242,6 @@ function sleep(ms) {
 
 const githubGetCache = new Map(); // key -> { ts, data }
 const githubInflight = new Map(); // key -> Promise
-const etagCache = new Map(); // key -> { etag, data, ts }
 
 function buildCacheKey(method, pathname, searchParams) {
   const qs = searchParams
@@ -488,7 +491,7 @@ async function fetchUsageFromGitHub(dateOverride) {
   return { data, endpoint };
 }
 
-function aggregateRanking(payload) {
+function aggregateRanking(payload, quiet) {
   const usageItems = Array.isArray(payload?.usageItems) ? payload.usageItems : [];
   const byUser = new Map();
 
@@ -511,7 +514,8 @@ function aggregateRanking(payload) {
     byUser.set(user, current);
   }
 
-  return Array.from(byUser.values())
+  const results = Array.from(byUser.values())
+    .filter((row) => row.user !== "(unknown)")
     .sort((a, b) => b.requests - a.requests)
     .map((row, idx) => ({
       rank: idx + 1,
@@ -519,6 +523,15 @@ function aggregateRanking(payload) {
       requests: Math.round(row.requests * 100) / 100,
       amount: Math.round(row.amount * 10000) / 10000,
     }));
+
+  const unknownRow = byUser.get("(unknown)");
+  if (unknownRow && !quiet) {
+    console.warn(
+      `[aggregate] Skipped ${unknownRow.requests} requests from "(unknown)" user (${usageItems.length} total items, ${results.length} known users)`
+    );
+  }
+
+  return results;
 }
 
 function hasKnownUsers(ranking) {
@@ -550,39 +563,14 @@ function aggregateSingleUserUsage(payload) {
 }
 
 async function fetchCopilotSeats(enterprise) {
-  const seatsPath = `/enterprises/${encodeURIComponent(enterprise)}/copilot/billing/seats`;
-
-  /* Step 1: fetch page 1 with headers to get total page count */
-  const firstResp = await githubGetWithHeaders(
-    seatsPath,
-    new URLSearchParams({ per_page: "100", page: "1" })
-  );
-  const firstPageSeats = Array.isArray(firstResp.data?.seats) ? firstResp.data.seats : [];
   const seats = [];
-  for (const seat of firstPageSeats) {
-    const login = seat?.assignee?.login;
-    if (typeof login === "string" && login.trim()) {
-      const teamObj = seat.assigning_team;
-      seats.push({
-        login: login.trim(),
-        team: teamObj?.name || "-",
-        planType: seat.plan_type || "-",
-        lastActivityAt: seat.last_activity_at || null,
-        lastActivityEditor: seat.last_activity_editor || "-",
-        createdAt: seat.created_at || null,
-      });
-    }
-  }
-
-  /* Step 2: parse total pages from Link header */
-  const lastPage = parseLastPageFromLink(firstResp.headers?.get?.("link"));
-  if (!lastPage || lastPage <= 1) return seats;
-
-  /* Step 3: fetch remaining pages in parallel chunks */
-  const pageNumbers = [];
-  for (let p = 2; p <= lastPage; p += 1) pageNumbers.push(p);
-
-  function processBatch(batch) {
+  let page = 1;
+  while (true) {
+    const data = await githubGetJson(
+      `/enterprises/${encodeURIComponent(enterprise)}/copilot/billing/seats`,
+      new URLSearchParams({ per_page: "100", page: String(page) })
+    );
+    const batch = Array.isArray(data?.seats) ? data.seats : [];
     for (const seat of batch) {
       const login = seat?.assignee?.login;
       if (typeof login === "string" && login.trim()) {
@@ -597,22 +585,9 @@ async function fetchCopilotSeats(enterprise) {
         });
       }
     }
+    if (batch.length < 100) break;
+    page += 1;
   }
-
-  for (let i = 0; i < pageNumbers.length; i += MAX_CONCURRENT_GITHUB) {
-    const chunk = pageNumbers.slice(i, i + MAX_CONCURRENT_GITHUB);
-    const results = await Promise.all(
-      chunk.map(async (page) => {
-        const data = await githubGetJson(
-          seatsPath,
-          new URLSearchParams({ per_page: "100", page: String(page) })
-        );
-        return Array.isArray(data?.seats) ? data.seats : [];
-      })
-    );
-    for (const batch of results) processBatch(batch);
-  }
-
   return seats;
 }
 
@@ -796,11 +771,64 @@ function enumerateDays(startStr, endStr) {
 
 async function refreshForDateOverride(dateOverride) {
   const cacheKey = JSON.stringify(dateOverride || {});
+
+  /* 1. Check completed cache */
   const cached = refreshCache.get(cacheKey);
   if (cached && Date.now() - cached.ts < CACHE_TTL) {
     return { result: cached.result, cacheHit: "memory" };
   }
 
+  /* 2. Check in-flight promise (prevent duplicate concurrent work) */
+  if (refreshInFlight.has(cacheKey)) {
+    return { result: (await refreshInFlight.get(cacheKey)).result, cacheHit: "shared" };
+  }
+
+  /* 3. Create and track in-flight promise */
+  const promise = _refreshForDateOverrideImpl(dateOverride, cacheKey);
+  refreshInFlight.set(cacheKey, promise);
+  try {
+    return await promise;
+  } finally {
+    refreshInFlight.delete(cacheKey);
+  }
+}
+
+/* Build cycle ranking from SQLite daily data for the given month.
+   Aggregates per-user ranking across all cached days in the month. */
+function buildCycleFromSQLite(year, month) {
+  const startDay = 1;
+  const endDay = new Date(year, month, 0).getUTCDate();
+  const startStr = `${year}-${String(month).padStart(2, "0")}-${String(startDay).padStart(2, "0")}`;
+  const endStr = `${year}-${String(month).padStart(2, "0")}-${String(endDay).padStart(2, "0")}`;
+
+  const rows = usageStore.getDaysInRange(startStr, endStr);
+  if (rows.length === 0) return null;
+
+  const byUser = new Map();
+  for (const row of rows) {
+    const ranking = row.ranking ? JSON.parse(row.ranking) : null;
+    if (!ranking || ranking.length === 0) continue;
+    for (const entry of ranking) {
+      const cur = byUser.get(entry.user) || { user: entry.user, requests: 0, amount: 0 };
+      cur.requests += entry.requests;
+      cur.amount += entry.amount;
+      byUser.set(cur.user, cur);
+    }
+  }
+
+  const results = Array.from(byUser.values())
+    .sort((a, b) => b.requests - a.requests)
+    .map((row, idx) => ({
+      rank: idx + 1,
+      user: row.user,
+      requests: Math.round(row.requests * 100) / 100,
+      amount: Math.round(row.amount * 10000) / 10000,
+    }));
+
+  return results.length > 0 ? results : null;
+}
+
+async function _refreshForDateOverrideImpl(dateOverride, cacheKey) {
   /* Build date key from override */
   const now = new Date();
   const year = dateOverride?.year || Number(requiredEnv("BILLING_YEAR")) || now.getFullYear();
@@ -814,25 +842,57 @@ async function refreshForDateOverride(dateOverride) {
   if (day) {
     const cachedDay = usageStore.getDay(dateKey);
     if (cachedDay && Date.now() - new Date(cachedDay.fetched_at).getTime() < USAGE_TTL_MS) {
-      const result = {
-        ranking: aggregateRanking(cachedDay.data),
-        mode: cachedDay.mode,
-        rawItemsCount: cachedDay.raw_count,
-        source: cachedDay.source,
-      };
+      /* Use cached ranking if available, otherwise aggregate from raw data */
+      let ranking = cachedDay.ranking || aggregateRanking(cachedDay.data);
+      let mode = cachedDay.mode;
+      const usageItems = Array.isArray(cachedDay.data?.usageItems) ? cachedDay.data.usageItems : [];
+
+      /* If cached ranking is empty but usageItems exist, trigger per-user fallback */
+      if (ranking.length === 0 && usageItems.length > 0 && Object.keys(teamCache.userTeamMap).length > 0) {
+        console.log(`[sqlite] Cached ranking empty for ${dateKey} (${usageItems.length} items), triggering per-user fallback`);
+        try {
+          ranking = await buildRankingByUserQueries(buildEndpoint(), dateOverride);
+          mode = "per-user-fallback";
+          /* Persist computed ranking back to SQLite */
+          if (ranking.length > 0) {
+            usageStore.saveDay(dateKey, cachedDay.year, cachedDay.month, cachedDay.day, cachedDay.data, mode, cachedDay.raw_count, cachedDay.source, cachedDay.fetched_at, ranking);
+            console.log(`[sqlite] Persisted ${ranking.length} users ranking for ${dateKey}`);
+          }
+        } catch (e) {
+          console.error(`[sqlite] Per-user fallback failed for ${dateKey}: ${e.message}`);
+        }
+      }
+
+      const result = { ranking, mode, rawItemsCount: cachedDay.raw_count, source: cachedDay.source };
       refreshCache.set(cacheKey, { ts: Date.now(), result });
       return { result, cacheHit: "sqlite" };
     }
   }
 
+  /* Cycle query (no day): try SQLite first, fall back to GitHub */
+  if (!day) {
+    const sqliteRanking = buildCycleFromSQLite(year, month);
+    if (sqliteRanking) {
+      const result = { ranking: sqliteRanking, mode: "sqlite-cycle", rawItemsCount: 0, source: buildEndpoint().scope };
+      refreshCache.set(cacheKey, { ts: Date.now(), result });
+      return { result, cacheHit: "sqlite" };
+    }
+    /* No SQLite data for this month — fall through to GitHub */
+  }
+
   /* Fetch from GitHub */
   const { data, endpoint } = await fetchUsageFromGitHub(dateOverride);
-  let ranking = aggregateRanking(data);
+  let ranking = aggregateRanking(data, !day);
   let mode = "direct";
 
   if (!hasKnownUsers(ranking) && Array.isArray(data?.usageItems) && data.usageItems.length > 0) {
-    ranking = await buildRankingByUserQueries(endpoint, dateOverride);
-    mode = "per-user-fallback";
+    if (day) {
+      ranking = await buildRankingByUserQueries(endpoint, dateOverride);
+      mode = "per-user-fallback";
+    }
+    /* Cycle (month-level) queries skip per-user fallback: GitHub aggregate API
+       doesn't return per-user fields. Without SQLite data available, cycle
+       ranking will be empty — the frontend falls back to daily requests. */
   }
 
   const result = {
@@ -844,7 +904,7 @@ async function refreshForDateOverride(dateOverride) {
 
   /* Persist to SQLite */
   if (day) {
-    usageStore.saveDay(dateKey, year, month, day, data, mode, result.rawItemsCount, endpoint.scope, new Date().toISOString());
+    usageStore.saveDay(dateKey, year, month, day, data, mode, result.rawItemsCount, endpoint.scope, new Date().toISOString(), ranking.length > 0 ? ranking : null);
   }
 
   refreshCache.set(cacheKey, { ts: Date.now(), result });
@@ -902,7 +962,7 @@ app.post("/api/usage/refresh", async (req, res) => {
           lastMode = result.mode;
           lastSource = result.source;
           totalDaysQueried += 1;
-          if (cacheHit === "memory" || cacheHit === "sqlite") cacheHits += 1;
+          if (cacheHit === "memory" || cacheHit === "sqlite" || cacheHit === "shared") cacheHits += 1;
         }
       }
 
@@ -1121,14 +1181,22 @@ app.get("/api/teams", (_req, res) => {
   });
 });
 
-/* Fetch a team's total member count via the Link header trick (per_page=1). */
+/* Fetch a team's total member count via serial pagination (reliable, no Link header dependency). */
 async function fetchEnterpriseTeamMemberCount(enterprise, teamId) {
   const pathname = `/enterprises/${encodeURIComponent(enterprise)}/teams/${teamId}/memberships`;
-  const params = new URLSearchParams({ per_page: "1", page: "1" });
-  const { data, headers } = await githubGetWithHeaders(pathname, params);
-  const lastPage = parseLastPageFromLink(headers.get("link"));
-  if (lastPage && Number.isFinite(lastPage)) return lastPage;
-  return Array.isArray(data) ? data.length : 0;
+  let page = 1;
+  let count = 0;
+  while (true) {
+    const data = await githubGetJson(
+      pathname,
+      new URLSearchParams({ per_page: "100", page: String(page) })
+    );
+    const batch = Array.isArray(data) ? data : [];
+    count += batch.length;
+    if (batch.length < 100) break;
+    page += 1;
+  }
+  return count;
 }
 
 const teamMemberCountCache = new Map(); // teamId -> { ts, count }
@@ -1765,11 +1833,28 @@ app.get("/api/analytics/top-users", async (req, res) => {
     var byUser = new Map();
     for (var di = 0; di < days.length; di += 1) {
       var d = days[di];
+
+      /* Prefer stored ranking (has per-user breakdown) over raw usageItems */
+      if (d.ranking) {
+        var ranking = typeof d.ranking === "string" ? JSON.parse(d.ranking) : d.ranking;
+        for (var ri = 0; ri < ranking.length; ri += 1) {
+          var row = ranking[ri];
+          var cur = byUser.get(row.user) || { user: row.user, requests: 0, amount: 0 };
+          cur.requests += row.requests;
+          cur.amount += row.amount;
+          byUser.set(row.user, cur);
+        }
+        continue;
+      }
+
+      /* Fallback: aggregate from raw usageItems (enterprise-level, no user fields) */
       var payload = typeof d.data === "string" ? JSON.parse(d.data) : d.data;
       var usageItems = Array.isArray(payload?.usageItems) ? payload.usageItems : [];
       for (var ii = 0; ii < usageItems.length; ii += 1) {
         var item = usageItems[ii];
         var user = pickUser(item);
+        /* Skip items without identifiable user fields */
+        if (user === "(unknown)") continue;
         var requests = toNumber(item.netQuantity) || toNumber(item.grossQuantity) || toNumber(item.quantity) || toNumber(item.requests);
         var amount = toNumber(item.netAmount) || toNumber(item.grossAmount) || toNumber(item.amount);
         var cur = byUser.get(user) || { user: user, requests: 0, amount: 0 };
@@ -1782,7 +1867,16 @@ app.get("/api/analytics/top-users", async (req, res) => {
     var top = Array.from(byUser.values())
       .sort(function (a, b) { return b.requests - a.requests; })
       .slice(0, 20)
-      .map(function (row, idx) { return { rank: idx + 1, user: row.user, requests: Math.round(row.requests * 100) / 100, amount: Math.round(row.amount * 10000) / 10000 }; });
+      .map(function (row, idx) {
+        var mapped = userMappingService.getUserByGithub(row.user);
+        return {
+          rank: idx + 1,
+          user: mapped ? mapped.adName : row.user,
+          adName: mapped ? mapped.adName : null,
+          requests: Math.round(row.requests * 100) / 100,
+          amount: Math.round(row.amount * 10000) / 10000,
+        };
+      });
 
     res.json({ ok: true, range: range, topUsers: top });
   } catch (error) {
@@ -1806,6 +1900,19 @@ app.get("/api/analytics/daily-summary", async (req, res) => {
     var daysWithData = 0;
     for (var di = 0; di < days.length; di += 1) {
       var d = days[di];
+
+      /* Prefer stored ranking for accurate per-user totals */
+      if (d.ranking) {
+        var ranking = typeof d.ranking === "string" ? JSON.parse(d.ranking) : d.ranking;
+        if (ranking.length === 0) continue;
+        daysWithData += 1;
+        for (var ri = 0; ri < ranking.length; ri += 1) {
+          totalRequests += ranking[ri].requests;
+          totalAmount += ranking[ri].amount;
+        }
+        continue;
+      }
+
       var payload = typeof d.data === "string" ? JSON.parse(d.data) : d.data;
       var usageItems = Array.isArray(payload?.usageItems) ? payload.usageItems : [];
       if (usageItems.length === 0) continue;
