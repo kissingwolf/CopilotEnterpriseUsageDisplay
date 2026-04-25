@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>数据分析</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main class="page">
+      <section class="card">
+        <header class="topbar topbar-row">
+          <h1>数据分析</h1>
+          <a class="back-link" href="/">返回用量看板</a>
+        </header>
+
+        <div class="query-bar">
+          <div class="query-bar-left">
+            <div class="query-tabs">
+              <button class="tab active" data-range="30">30天</button>
+              <button class="tab" data-range="90">90天</button>
+              <button class="tab" data-range="365">1年</button>
+            </div>
+            <button id="refreshBtn" class="refresh-btn">刷新</button>
+          </div>
+        </div>
+
+        <p id="meta" class="meta">尚未加载数据</p>
+        <div id="error" class="error" hidden></div>
+
+        <!-- Summary cards -->
+        <div id="summaryCards" class="summary-cards"></div>
+
+        <!-- Chart tabs -->
+        <div class="analytics-tabs">
+          <button class="analytics-tab active" data-pane="trend">趋势图</button>
+          <button class="analytics-tab" data-pane="top">Top用户</button>
+        </div>
+
+        <div id="trendPane" class="analytics-pane active">
+          <div class="chart-container">
+            <canvas id="trendChart"></canvas>
+          </div>
+        </div>
+        <div id="topPane" class="analytics-pane">
+          <div class="chart-container">
+            <canvas id="topChart"></canvas>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
+    <script src="/analytics.js"></script>
+  </body>
+</html>
