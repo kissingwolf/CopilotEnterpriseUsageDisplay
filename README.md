@@ -32,6 +32,11 @@
 - **自定义名称显示** — 已映射用户在首页用量排行中优先显示自定义名称，未映射用户仍显示 GitHub 登录名
 - **映射状态可视化** — 用户映射管理页中每行显示 已映射/未映射 标签，支持一键刷新成员列表
 - **自动热重载映射** — 映射文件变更时，内存中的数据自动同步，无需重启服务
+- **三层缓存架构** — 内存缓存（5 分钟） → SQLite 持久缓存（90 天） → GitHub API，大幅减少 API 调用
+- **ETag 条件请求** — 数据未变化时返回 304 Not Modified，不消耗 API 配额
+- **数据分析页面** — 独立页面提供用量趋势图、Top 用户排行柱状图、汇总统计卡片（30 天 / 90 天 / 1 年）
+- **缓存命中率展示** — 页面顶部显示缓存命中百分比，直观反映 API 调用节省效果
+- **并发请求合并（In-flight Dedup）** — 多个浏览器标签页同时刷新时自动复用同一请求，避免重复查询
 
 ## 技术架构
 
@@ -39,14 +44,17 @@
 server.js             Express 后端，封装 GitHub REST API 调用
 lib/
   user-mapping.js     用户映射服务（Singleton，支持文件监听热重载）
+  usage-store.js      SQLite 持久缓存层（better-sqlite3，WAL 模式）
 public/
   index.html          主页面结构（用量排行）
-  script.js           主页面交互、排序、模态框
+  script.js           主页面交互、排序、模态框、分页
   styles.css          全局样式
   costcenter.html     Cost center 页面
   costcenter.js       Cost center 交互逻辑
   user.html           用户映射管理页
   user.js             用户映射页交互逻辑
+  analytics.html      数据分析页面
+  analytics.js        数据分析页交互逻辑
 scripts/
   preflight-check.sh  启动前自检（Shell）
   preflight-check.js  启动前自检（Node）
@@ -54,10 +62,12 @@ docs/
   github-enterprise-copilot-billing-api-checklist.md
   github-enterprise-copilot-billing-scope-checklist.md
   minimal-env-and-preflight-design.md
+  sqlite-cache-design.md   SQLite 缓存架构设计文档
 deploy/
   copilot-dashboard.service   systemd 服务单元
   nginx-copilot-dashboard.conf  Nginx 反向代理配置
 data/
+  usage.db            SQLite 数据库文件（自动生成）
   user_mapping.json   本地用户映射表（自动生成，已加入 .gitignore）
 .env                  配置（不入库）
 .env.example          配置模板
@@ -75,6 +85,20 @@ data/
 | `DELETE /enterprises/{enterprise}/settings/billing/cost-centers/{cost_center_id}/resource` | 从 Cost Center 移除资源（users/orgs/repos） |
 | `GET /enterprises/{enterprise}/teams` | Enterprise Teams 列表及描述 |
 | `GET /enterprises/{enterprise}/teams/{team_id}/memberships` | Team 成员列表 |
+
+## 新增 API 端点（本项目内部）
+
+| Method | Path | 用途 |
+| --- | --- | --- |
+| `POST` | `/api/usage/refresh` | 刷新用量数据，支持按日期/日期范围/默认三种查询模式 |
+| `GET` | `/api/seats` | 获取 Copilot 席位数据（支持 `?refresh=1` 强制刷新） |
+| `GET` | `/api/teams` | 获取 Enterprise Teams 列表（含成员数） |
+| `GET` | `/api/cost-centers` | 获取 Cost Center 列表 |
+| `GET` | `/api/cost-centers/:name` | 获取单个 Cost Center 详情（含资源分组） |
+| `POST` | `/api/cost-centers/:id/add-users-from-teams` | 按 Team 批量向 Cost Center 添加 Users |
+| `GET` | `/api/analytics/trends?range=30` | 每日用量趋势数据（Chart.js 趋势图） |
+| `GET` | `/api/analytics/top-users?range=30` | Top 20 用户排名（Chart.js 柱状图） |
+| `GET` | `/api/analytics/daily-summary?range=30` | 汇总统计（总量、日均、有数据天数） |
 
 ## 快速开始
 
@@ -153,6 +177,30 @@ node ./scripts/preflight-check.js --strict
 | `GITHUB_API_BASE` | 否 | API 地址，默认 `https://api.github.com` |
 | `PORT` | 否 | 服务端口，默认 `3000` |
 
+## 缓存架构
+
+### 三层缓存体系
+
+```
+内存缓存 (5 分钟) → SQLite 持久缓存 (90 天) → GitHub API
+```
+
+| 缓存层 | 存储 | TTL | 用途 |
+| --- | --- | --- | --- |
+| `refreshCache` | 内存 Map | 5 分钟 | 最近查询的用量排名 |
+| `etagCache` | 内存 Map + SQLite | 持久化 | GitHub API 条件请求 (304) |
+| `teamCache` | 内存对象 | 10 分钟 | Copilot 席位列表 |
+| `daily_usage` | SQLite 表 | 90 天 | 每日用量原始数据 + per-user 排名 |
+| `seats_snapshot` | SQLite 表 | 10 分钟 | 席位快照，启动恢复 |
+| `etag_cache` | SQLite 表 | 持久化 | ETag 持久化，重启恢复 |
+
+### 缓存命中率
+
+每次刷新后页面顶部显示缓存命中百分比：
+- **100%** = 全部从 SQLite 读取，零 GitHub 调用
+- **50%** = 一半日期命中缓存，另一半调用了 GitHub
+- **0%** = 全部为首次查询，需逐个调用 GitHub API
+
 ## 自检脚本说明
 
 - `scripts/preflight-check.sh`：Shell 版自检，适合 CI/CD 与服务器预检查
@@ -176,6 +224,7 @@ node ./scripts/preflight-check.js --strict
 - `docs/github-enterprise-copilot-billing-api-checklist.md`：Copilot/Billing API 设计与字段映射清单
 - `docs/github-enterprise-copilot-billing-scope-checklist.md`：按接口逐条对应的角色与 scope 核对表
 - `docs/minimal-env-and-preflight-design.md`：最小权限 `.env` 模板与 preflight 设计说明
+- `docs/sqlite-cache-design.md`：SQLite 持久缓存架构设计、数据表结构、API 调用流程详解
 
 ## Cost Center 功能使用说明
 
@@ -336,6 +385,20 @@ sudo systemctl reload nginx
 | --- | --- | --- | --- |
 | Business | 300 requests | $19 | $0.04/request |
 | Enterprise | 1000 requests | $39 | $0.04/request |
+
+## 更新日志
+
+### 近期更新
+
+- **三层缓存架构** — 引入 SQLite 持久缓存（better-sqlite3），缓存层级从"内存 → GitHub"扩展为"内存（5 分钟） → SQLite（90 天） → GitHub"，API 调用量减少约 97%
+- **ETag 条件请求** — 自动缓存 GitHub API 的 ETag 响应头，数据未变化时返回 304 Not Modified，不消耗 rate limit
+- **数据分析页面** — 新增 `/analytics` 页面，支持用量趋势图、Top 用户排行柱状图、汇总统计卡片，统计周期可选 30 天 / 90 天 / 1 年
+- **缓存命中率展示** — 刷新后页面顶部显示缓存命中百分比
+- **Cycle 月度汇总优化** — "按日期查询"中的"本周期请求量"从 SQLite 已有数据聚合，避免每次刷新都触发 per-user fallback
+- **并发请求合并（In-flight Dedup）** — 多个浏览器标签页同时刷新时自动复用同一 Promise，防止重复的 per-user fallback
+- **排名数据持久化** — `daily_usage.ranking` 列存储 per-user 排名，Analytics 页面纯本地读取，响应 < 10ms
+- **用户名映射一致性** — Analytics Top 用户遵循与主页面相同的 AD 名称映射规则（已映射显示 AD 名，未映射显示 GitHub 名）
+- **数据分析页缓存** — 所有分析 API 均从 SQLite 读取，不直接调用 GitHub
 
 ## License
 
