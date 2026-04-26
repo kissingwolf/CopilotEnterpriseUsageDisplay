@@ -78,6 +78,20 @@ h1 {
   color: #2f6f57;
 }
 
+/* Data freshness badges */
+.freshness-badge {
+  display: inline-block;
+  font-size: 11px;
+  padding: 1px 8px;
+  border-radius: 10px;
+  margin-left: 6px;
+  vertical-align: middle;
+  font-weight: 500;
+}
+.freshness-fresh { background: #d4edda; color: #155724; }
+.freshness-aging { background: #fff3cd; color: #856404; }
+.freshness-stale { background: #f8d7da; color: #721c24; }
+
 /* Query bar — single row */
 .query-bar {
   display: flex;

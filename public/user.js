@@ -1,6 +1,8 @@
 (function () {
   'use strict';
 
+  var C = CopilotDashboard;
+
   var PAGE_SIZE = 15;
   var MAX_VISIBLE_PAGES = 5;
 
@@ -20,30 +22,9 @@
   var membersTbody = document.getElementById('membersTbody');
   var pagination = document.getElementById('pagination');
 
-  function escapeHtml(str) {
-    return String(str)
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;');
-  }
-
-  function formatTs(isoText) {
-    if (!isoText) return '未知';
-    var d = new Date(isoText);
-    return Number.isNaN(d.getTime())
-      ? isoText
-      : d.toLocaleString('zh-CN', { hour12: false });
-  }
-
-  function setError(message) {
-    if (!message) {
-      errorBox.hidden = true;
-      errorBox.textContent = '';
-      return;
-    }
-    errorBox.hidden = false;
-    errorBox.textContent = message;
-  }
+  function escapeHtml(str) { return C.escapeHtml(str); }
+  function formatTs(isoText) { return isoText ? C.formatTs(isoText) : '未知'; }
+  function setError(message) { C.setError(errorBox, message); }
 
   function sortData(data, key, dir) {
     var arr = data.slice();
