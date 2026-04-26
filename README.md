@@ -40,37 +40,52 @@
 
 ## 技术架构
 
+项目采用 **模块化分层架构**，后端按职责拆分为入口层、路由层、服务层、数据层，前端通过 IIFE + 公共命名空间消除全局变量污染。
+
 ```text
-server.js             Express 后端，封装 GitHub REST API 调用
+server.js                Express 入口（~100 行），挂载路由、优雅关闭、全局错误处理、健康检查
+routes/
+  usage.js              用量查询与聚合路由
+  billing.js            账单汇总路由
+  teams.js              Enterprise Teams 路由
+  costcenter.js         Cost Center 管理路由
+  analytics.js          数据分析路由（趋势、Top 用户、汇总）
+  user-mapping.js       用户映射管理路由（上传、重载、成员列表）
+  seats.js              Copilot 席位数据加载器（共享模块）
 lib/
-  user-mapping.js     用户映射服务（Singleton，支持文件监听热重载）
-  usage-store.js      SQLite 持久缓存层（better-sqlite3，WAL 模式）
+  github-api.js         GitHub API 服务层（LRU 缓存、ETag、并发队列、重试退避、single-flight）
+  usage-store.js        SQLite 持久缓存层（预编译语句、席位快照清理）
+  user-mapping.js       用户映射服务（fs.watch + debounce 热重载）
+  billing-config.js     计费配置与费用计算
+  date-utils.js         日期工具函数
+  helpers.js            共享辅助函数
+  logger.js             pino 结构化日志（dev 模式 pretty，生产 JSON）
 public/
-  index.html          主页面结构（用量排行）
-  script.js           主页面交互、排序、模态框、分页
-  styles.css          全局样式
-  costcenter.html     Cost center 页面
-  costcenter.js       Cost center 交互逻辑
-  user.html           用户映射管理页
-  user.js             用户映射页交互逻辑
-  analytics.html      数据分析页面
-  analytics.js        数据分析页交互逻辑
+  common.js             前端公共模块（IIFE，CopilotDashboard 命名空间）
+  index.html / script.js      主页面（用量排行、排序、模态框、分页）
+  costcenter.html / costcenter.js  Cost Center 管理页
+  analytics.html / analytics.js    数据分析页（含数据新鲜度提示）
+  user.html / user.js              用户映射管理页
+  styles.css            全局样式
+test/
+  date-utils.test.js    日期工具单元测试
+  billing-config.test.js  计费配置单元测试
+  helpers.test.js       辅助函数单元测试
 scripts/
-  preflight-check.sh  启动前自检（Shell）
-  preflight-check.js  启动前自检（Node）
+  preflight-check.sh    启动前自检（Shell）
+  preflight-check.js    启动前自检（Node）
 docs/
-  github-enterprise-copilot-billing-api-checklist.md
-  github-enterprise-copilot-billing-scope-checklist.md
-  minimal-env-and-preflight-design.md
-  sqlite-cache-design.md   SQLite 缓存架构设计文档
+  refactoring-architecture.md  重构架构设计文档
+  sqlite-cache-design.md       SQLite 缓存架构设计文档
+  ...                          其他设计文档
 deploy/
-  copilot-dashboard.service   systemd 服务单元
-  nginx-copilot-dashboard.conf  Nginx 反向代理配置
+  copilot-dashboard.service    systemd 服务单元
+  nginx-copilot-dashboard.conf Nginx 反向代理配置
 data/
-  usage.db            SQLite 数据库文件（自动生成）
-  user_mapping.json   本地用户映射表（自动生成，已加入 .gitignore）
-.env                  配置（不入库）
-.env.example          配置模板
+  usage.db              SQLite 数据库文件（自动生成）
+  user_mapping.json     本地用户映射表（自动生成）
+.env                    配置（不入库）
+.env.example            配置模板
 ```
 
 ## 使用的 GitHub API
@@ -90,6 +105,7 @@ data/
 
 | Method | Path | 用途 |
 | --- | --- | --- |
+| `GET` | `/api/health` | 健康检查端点，返回服务运行状态 |
 | `POST` | `/api/usage/refresh` | 刷新用量数据，支持按日期/日期范围/默认三种查询模式 |
 | `GET` | `/api/seats` | 获取 Copilot 席位数据（支持 `?refresh=1` 强制刷新） |
 | `GET` | `/api/teams` | 获取 Enterprise Teams 列表（含成员数） |
@@ -141,6 +157,13 @@ npm start
 
 ```bash
 npm run dev
+```
+
+### 运行测试
+
+```bash
+npm test              # 运行所有单元测试
+npm run test:watch    # 监听模式
 ```
 
 ### 启动前自检（推荐）
@@ -221,6 +244,7 @@ node ./scripts/preflight-check.js --strict
 
 ## 文档索引
 
+- `docs/refactoring-architecture.md`：v2 重构架构设计——模块化拆分、性能优化、可靠性改进的思路与方案
 - `docs/github-enterprise-copilot-billing-api-checklist.md`：Copilot/Billing API 设计与字段映射清单
 - `docs/github-enterprise-copilot-billing-scope-checklist.md`：按接口逐条对应的角色与 scope 核对表
 - `docs/minimal-env-and-preflight-design.md`：最小权限 `.env` 模板与 preflight 设计说明
@@ -388,7 +412,25 @@ sudo systemctl reload nginx
 
 ## 更新日志
 
-### 近期更新
+### v2 — 架构重构
+
+- **模块化拆分** — `server.js` 从 ~1950 行精简为 ~100 行入口文件，业务逻辑拆分为 7 个路由模块 + 6 个 lib 模块
+- **结构化日志** — 引入 pino 日志框架，开发模式 pretty 输出，生产模式 JSON 格式
+- **优雅关闭** — SIGTERM/SIGINT 信号处理，10 秒超时强制退出，确保数据库连接正确释放
+- **全局错误处理** — Express 错误中间件 + uncaughtException/unhandledRejection 兜底
+- **健康检查** — 新增 `/api/health` 端点，便于监控和负载均衡探测
+- **LRU 缓存** — GitHub API GET 缓存从 Map 升级为 LRU Cache（max=500），防止内存无限增长
+- **SQLite 预编译语句** — 所有查询在构造时 `db.prepare()`，运行时直接执行，减少 SQL 解析开销
+- **席位快照清理** — 自动保留最近 20 条快照，避免数据库膨胀
+- **文件监听优化** — `fs.watchFile` 轮询改为 `fs.watch` + debounce（300ms），降低 CPU 开销
+- **前端 IIFE 封装** — 所有页面脚本包裹在 IIFE 中，消除全局变量污染
+- **前端公共模块** — 提取 `common.js` 共享函数（CopilotDashboard 命名空间），消除跨页面代码重复
+- **首屏加载优化** — 合并首屏双请求为单次 POST，结合 localStorage 缓存实现秒开
+- **数据新鲜度提示** — 分析页显示数据加载时间徽章（新鲜/老化/陈旧三级），30 秒自动更新
+- **单元测试** — 引入 vitest 框架，覆盖 date-utils / billing-config / helpers 三个纯函数模块（34 个用例）
+- **边界修复** — `toNumber()` 修复 NaN/Infinity 输入返回 0 而非透传
+
+### v1 — 初始版本
 
 - **三层缓存架构** — 引入 SQLite 持久缓存（better-sqlite3），缓存层级从"内存 → GitHub"扩展为"内存（5 分钟） → SQLite（90 天） → GitHub"，API 调用量减少约 97%
 - **ETag 条件请求** — 自动缓存 GitHub API 的 ETag 响应头，数据未变化时返回 304 Not Modified，不消耗 rate limit

@@ -1,0 +1,341 @@
+/**
+ * Usage routes – GET /api/usage, POST /api/usage/refresh
+ */
+const express = require("express");
+const logger = require("../lib/logger");
+const { requiredEnv, INCLUDED_QUOTA, PLAN_CONFIG, calcAmount } = require("../lib/billing-config");
+const { githubGetJson } = require("../lib/github-api");
+const { toNumber, pickUser, writeError, buildQueryParams, buildEndpoint } = require("../lib/helpers");
+const { enumerateDays } = require("../lib/date-utils");
+
+const CACHE_TTL_MS = (Number(requiredEnv("CACHE_TTL")) || 300) * 1000;
+
+module.exports = function createUsageRouter({ usageStore, teamCache, userMappingService }) {
+  const router = express.Router();
+
+  /* ── In-memory caches for refresh dedup ── */
+  const refreshCache = new Map();
+  const refreshInFlight = new Map();
+
+  /* ── State (server-side latest result) ── */
+  const state = {
+    fetchedAt: null, ranking: [], source: null,
+    rawItemsCount: 0, mode: "direct", queryMode: "default",
+  };
+
+  /* ── Aggregation helpers ── */
+
+  function aggregateRanking(payload, quiet) {
+    const usageItems = Array.isArray(payload?.usageItems) ? payload.usageItems : [];
+    const byUser = new Map();
+    for (const item of usageItems) {
+      const user = pickUser(item);
+      const requests = toNumber(item.netQuantity) || toNumber(item.grossQuantity) || toNumber(item.quantity) || toNumber(item.requests);
+      const amount = toNumber(item.netAmount) || toNumber(item.grossAmount) || toNumber(item.amount);
+      const current = byUser.get(user) || { user, requests: 0, amount: 0 };
+      current.requests += requests;
+      current.amount += amount;
+      byUser.set(user, current);
+    }
+    const results = Array.from(byUser.values())
+      .filter((row) => row.user !== "(unknown)")
+      .sort((a, b) => b.requests - a.requests)
+      .map((row, idx) => ({
+        rank: idx + 1, user: row.user,
+        requests: Math.round(row.requests * 100) / 100,
+        amount: Math.round(row.amount * 10000) / 10000,
+      }));
+    const unknownRow = byUser.get("(unknown)");
+    if (unknownRow && !quiet) {
+      logger.warn({ unknownRequests: unknownRow.requests, totalItems: usageItems.length, knownUsers: results.length }, "Skipped unknown user requests");
+    }
+    return results;
+  }
+
+  function hasKnownUsers(ranking) {
+    return ranking.some((row) => row.user !== "(unknown)");
+  }
+
+  function aggregateSingleUserUsage(payload) {
+    const usageItems = Array.isArray(payload?.usageItems) ? payload.usageItems : [];
+    let requests = 0, amount = 0;
+    for (const item of usageItems) {
+      requests += toNumber(item.netQuantity) || toNumber(item.grossQuantity) || toNumber(item.quantity) || toNumber(item.requests);
+      amount += toNumber(item.netAmount) || toNumber(item.grossAmount) || toNumber(item.amount);
+    }
+    return { requests: Math.round(requests * 100) / 100, amount: Math.round(amount * 10000) / 10000 };
+  }
+
+  function getUserPlanType(login) {
+    const seat = teamCache.seatsRaw.find((s) => s.login === login);
+    return seat ? seat.planType : "business";
+  }
+
+  function enrichRanking(ranking) {
+    return ranking.map((row) => {
+      const planType = getUserPlanType(row.user);
+      const cfg = PLAN_CONFIG[planType] || PLAN_CONFIG.business;
+      const reqsForPct = row.cycleRequests != null ? row.cycleRequests : row.requests;
+      const mapped = userMappingService.getUserByGithub(row.user);
+      const result = {
+        user: row.user,
+        adName: mapped ? mapped.adName : null,
+        team: (teamCache.userTeamMap[row.user] || []).join(", ") || "-",
+        requests: row.requests,
+        percentage: cfg.quota > 0 ? Math.round(reqsForPct / cfg.quota * 10000) / 100 : 0,
+        amount: calcAmount(reqsForPct, planType),
+      };
+      if (row.cycleRequests != null) result.cycleRequests = row.cycleRequests;
+      return result;
+    });
+  }
+
+  async function buildRankingByUserQueries(endpoint, dateOverride = {}) {
+    const users = Object.keys(teamCache.userTeamMap);
+    if (users.length === 0) throw new Error("No Copilot users discovered.");
+    const results = [];
+    const chunkSize = 8;
+    let failedQueries = 0, firstErrorMessage = "";
+    for (let i = 0; i < users.length; i += chunkSize) {
+      const chunk = users.slice(i, i + chunkSize);
+      const chunkResults = await Promise.all(chunk.map(async (user) => {
+        try {
+          const payload = await githubGetJson(endpoint.path, buildQueryParams({ ...dateOverride, user }));
+          const summary = aggregateSingleUserUsage(payload);
+          return { user, requests: summary.requests, amount: summary.amount };
+        } catch (error) {
+          failedQueries += 1;
+          if (!firstErrorMessage && error instanceof Error) firstErrorMessage = error.message;
+          return { user, requests: 0, amount: 0 };
+        }
+      }));
+      results.push(...chunkResults);
+    }
+    if (failedQueries === users.length) throw new Error(`Per-user usage query failed for all users. ${firstErrorMessage}`);
+    return results.sort((a, b) => b.requests - a.requests).map((row, idx) => ({
+      rank: idx + 1, user: row.user, requests: row.requests, amount: row.amount,
+    }));
+  }
+
+  function buildCycleFromSQLite(year, month) {
+    const endDay = new Date(year, month, 0).getUTCDate();
+    const startStr = `${year}-${String(month).padStart(2, "0")}-01`;
+    const endStr = `${year}-${String(month).padStart(2, "0")}-${String(endDay).padStart(2, "0")}`;
+    const rows = usageStore.getDaysInRange(startStr, endStr);
+    if (rows.length === 0) return null;
+    const byUser = new Map();
+    for (const row of rows) {
+      const ranking = row.ranking ? JSON.parse(row.ranking) : null;
+      if (!ranking || ranking.length === 0) continue;
+      for (const entry of ranking) {
+        const cur = byUser.get(entry.user) || { user: entry.user, requests: 0, amount: 0 };
+        cur.requests += entry.requests;
+        cur.amount += entry.amount;
+        byUser.set(cur.user, cur);
+      }
+    }
+    const results = Array.from(byUser.values())
+      .sort((a, b) => b.requests - a.requests)
+      .map((row, idx) => ({
+        rank: idx + 1, user: row.user,
+        requests: Math.round(row.requests * 100) / 100,
+        amount: Math.round(row.amount * 10000) / 10000,
+      }));
+    return results.length > 0 ? results : null;
+  }
+
+  async function refreshForDateOverride(dateOverride) {
+    const cacheKey = JSON.stringify(dateOverride || {});
+    const cached = refreshCache.get(cacheKey);
+    if (cached && Date.now() - cached.ts < CACHE_TTL_MS) return { result: cached.result, cacheHit: "memory" };
+    if (refreshInFlight.has(cacheKey)) return { result: (await refreshInFlight.get(cacheKey)).result, cacheHit: "shared" };
+    const promise = _refreshImpl(dateOverride, cacheKey);
+    refreshInFlight.set(cacheKey, promise);
+    try { return await promise; } finally { refreshInFlight.delete(cacheKey); }
+  }
+
+  async function _refreshImpl(dateOverride, cacheKey) {
+    const now = new Date();
+    const year = dateOverride?.year || Number(requiredEnv("BILLING_YEAR")) || now.getFullYear();
+    const month = dateOverride?.month || Number(requiredEnv("BILLING_MONTH")) || (now.getMonth() + 1);
+    const day = dateOverride?.day;
+    const dateKey = day
+      ? `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`
+      : `${year}-${String(month).padStart(2, "0")}`;
+
+    const { USAGE_TTL_MS } = require("../lib/usage-store");
+
+    /* Check SQLite cache for single day */
+    if (day) {
+      const cachedDay = usageStore.getDay(dateKey);
+      if (cachedDay && Date.now() - new Date(cachedDay.fetched_at).getTime() < USAGE_TTL_MS) {
+        let ranking = cachedDay.ranking || aggregateRanking(cachedDay.data);
+        let mode = cachedDay.mode;
+        const usageItems = Array.isArray(cachedDay.data?.usageItems) ? cachedDay.data.usageItems : [];
+        if (ranking.length === 0 && usageItems.length > 0 && Object.keys(teamCache.userTeamMap).length > 0) {
+          logger.info({ dateKey, items: usageItems.length }, "SQLite cached ranking empty, triggering per-user fallback");
+          try {
+            ranking = await buildRankingByUserQueries(buildEndpoint(), dateOverride);
+            mode = "per-user-fallback";
+            if (ranking.length > 0) {
+              usageStore.saveDay(dateKey, cachedDay.year, cachedDay.month, cachedDay.day, cachedDay.data, mode, cachedDay.raw_count, cachedDay.source, cachedDay.fetched_at, ranking);
+            }
+          } catch (e) {
+            logger.error({ dateKey, err: e.message }, "Per-user fallback failed");
+          }
+        }
+        const result = { ranking, mode, rawItemsCount: cachedDay.raw_count, source: cachedDay.source };
+        refreshCache.set(cacheKey, { ts: Date.now(), result });
+        return { result, cacheHit: "sqlite" };
+      }
+    }
+
+    /* Cycle query (no day): try SQLite first */
+    if (!day) {
+      const sqliteRanking = buildCycleFromSQLite(year, month);
+      if (sqliteRanking) {
+        const result = { ranking: sqliteRanking, mode: "sqlite-cycle", rawItemsCount: 0, source: buildEndpoint().scope };
+        refreshCache.set(cacheKey, { ts: Date.now(), result });
+        return { result, cacheHit: "sqlite" };
+      }
+    }
+
+    /* Fetch from GitHub */
+    const endpoint = buildEndpoint();
+    const extra = dateOverride || {};
+    const data = await githubGetJson(endpoint.path, buildQueryParams(extra));
+    let ranking = aggregateRanking(data, !day);
+    let mode = "direct";
+    if (!hasKnownUsers(ranking) && Array.isArray(data?.usageItems) && data.usageItems.length > 0) {
+      if (day) {
+        ranking = await buildRankingByUserQueries(endpoint, dateOverride);
+        mode = "per-user-fallback";
+      }
+    }
+    const result = {
+      ranking, mode,
+      rawItemsCount: Array.isArray(data?.usageItems) ? data.usageItems.length : 0,
+      source: endpoint.scope,
+    };
+    if (day) {
+      usageStore.saveDay(dateKey, year, month, day, data, mode, result.rawItemsCount, endpoint.scope, new Date().toISOString(), ranking.length > 0 ? ranking : null);
+    }
+    refreshCache.set(cacheKey, { ts: Date.now(), result });
+    return { result, cacheHit: "github" };
+  }
+
+  function mergeRankings(list) {
+    const byUser = new Map();
+    for (const ranking of list) {
+      for (const row of ranking) {
+        const cur = byUser.get(row.user) || { user: row.user, requests: 0, amount: 0 };
+        cur.requests += row.requests;
+        cur.amount += row.amount;
+        byUser.set(row.user, cur);
+      }
+    }
+    return Array.from(byUser.values())
+      .sort((a, b) => b.requests - a.requests)
+      .map((row, idx) => ({
+        rank: idx + 1, user: row.user,
+        requests: Math.round(row.requests * 100) / 100,
+        amount: Math.round(row.amount * 10000) / 10000,
+      }));
+  }
+
+  function parseDateStr(str) {
+    if (!str || typeof str !== "string") return null;
+    const m = str.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if (!m) return null;
+    return { year: Number(m[1]), month: Number(m[2]), day: Number(m[3]) };
+  }
+
+  /* ── Routes ── */
+
+  router.get("/api/usage", (_req, res) => {
+    res.json({
+      ok: true, fetchedAt: state.fetchedAt, source: state.source,
+      rawItemsCount: state.rawItemsCount, mode: state.mode,
+      dateLabel: state.dateLabel || "", queryMode: state.queryMode || "default",
+      ranking: state.ranking, includedQuota: INCLUDED_QUOTA,
+    });
+  });
+
+  router.post("/api/usage/refresh", async (req, res) => {
+    try {
+      const { ensureSeatsData } = require("./seats");
+      await ensureSeatsData(teamCache, usageStore);
+
+      const { queryMode, date, startDate, endDate } = req.body || {};
+      let ranking, mode, rawItemsCount, source, dateLabel;
+      let cacheHits = 0, totalDaysQueried = 0;
+      const { MAX_CONCURRENT_GITHUB } = require("../lib/github-api");
+
+      if (queryMode === "range" && startDate && endDate) {
+        const days = enumerateDays(startDate, endDate);
+        if (days.length === 0) throw new Error("无效的日期范围");
+        if (days.length > 31) throw new Error("日期范围不能超过 31 天");
+        const allRankings = [];
+        let totalRaw = 0, lastMode = "direct", lastSource = "";
+        for (let i = 0; i < days.length; i += MAX_CONCURRENT_GITHUB) {
+          const chunk = days.slice(i, i + MAX_CONCURRENT_GITHUB);
+          const chunkResults = await Promise.all(chunk.map((d) => refreshForDateOverride(d)));
+          for (const { result, cacheHit } of chunkResults) {
+            allRankings.push(result.ranking);
+            totalRaw += result.rawItemsCount;
+            lastMode = result.mode; lastSource = result.source;
+            totalDaysQueried += 1;
+            if (cacheHit === "memory" || cacheHit === "sqlite" || cacheHit === "shared") cacheHits += 1;
+          }
+        }
+        ranking = mergeRankings(allRankings);
+        mode = lastMode; rawItemsCount = totalRaw; source = lastSource;
+        dateLabel = `${startDate} ~ ${endDate} (${days.length}天)`;
+      } else if (queryMode === "single" && date) {
+        const d = parseDateStr(date);
+        if (!d) throw new Error("无效的日期格式，请使用 YYYY-MM-DD");
+        const [dailyResp, cycleResp] = await Promise.all([
+          refreshForDateOverride(d),
+          refreshForDateOverride({ year: d.year, month: d.month }),
+        ]);
+        totalDaysQueried = 2;
+        if (dailyResp.cacheHit !== "github") cacheHits += 1;
+        if (cycleResp.cacheHit !== "github") cacheHits += 1;
+        const cycleMap = new Map();
+        for (const row of cycleResp.result.ranking) cycleMap.set(row.user, row.requests);
+        ranking = dailyResp.result.ranking.map((row) => ({ ...row, cycleRequests: cycleMap.get(row.user) || 0 }));
+        mode = dailyResp.result.mode; rawItemsCount = dailyResp.result.rawItemsCount;
+        source = dailyResp.result.source; dateLabel = date;
+      } else {
+        const resp = await refreshForDateOverride({});
+        totalDaysQueried = 1;
+        if (resp.cacheHit !== "github") cacheHits = 1;
+        ranking = resp.result.ranking; mode = resp.result.mode;
+        rawItemsCount = resp.result.rawItemsCount; source = resp.result.source;
+        const nowLabel = new Date();
+        const labelYear = requiredEnv("BILLING_YEAR") || String(nowLabel.getFullYear());
+        const labelMonth = requiredEnv("BILLING_MONTH") || String(nowLabel.getMonth() + 1);
+        dateLabel = `${labelYear}-${labelMonth}${requiredEnv("BILLING_DAY") ? "-" + requiredEnv("BILLING_DAY") : ""}`;
+      }
+
+      ranking = enrichRanking(ranking);
+      const resolvedQueryMode = (queryMode === "range" && startDate && endDate) ? "range"
+        : (queryMode === "single" && date) ? "single" : "default";
+      Object.assign(state, {
+        fetchedAt: new Date().toISOString(), source, rawItemsCount,
+        mode, ranking, dateLabel, queryMode: resolvedQueryMode,
+      });
+      res.json({
+        ok: true, fetchedAt: state.fetchedAt, source: state.source,
+        rawItemsCount: state.rawItemsCount, mode: state.mode,
+        dateLabel: state.dateLabel, queryMode: state.queryMode,
+        ranking: state.ranking, includedQuota: INCLUDED_QUOTA,
+        cacheHitRatio: totalDaysQueried > 0 ? Math.round((cacheHits / totalDaysQueried) * 100) : 0,
+      });
+    } catch (error) {
+      writeError(res, error);
+    }
+  });
+
+  return router;
+};
