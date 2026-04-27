@@ -5,7 +5,7 @@ const express = require("express");
 const path = require("path");
 const fs = require("fs");
 const multer = require("multer");
-const xlsx = require("xlsx");
+const ExcelJS = require("exceljs");
 const { writeError } = require("../lib/helpers");
 const { ensureSeatsData } = require("./seats");
 
@@ -36,17 +36,36 @@ module.exports = function createUserMappingRouter({ userMappingService, usageSto
 
   const userDataDir = path.join(__dirname, "..", "data");
 
-  function convertXlsxToJson(filePath) {
-    const workbook = xlsx.readFile(filePath);
-    const sheetName = workbook.SheetNames[0];
-    if (!sheetName) throw new Error("Excel 文件中没有工作表");
-    const rows = xlsx.utils.sheet_to_json(workbook.Sheets[sheetName], { defval: "" });
+  async function convertXlsxToJson(filePath) {
+    const workbook = new ExcelJS.Workbook();
+    await workbook.xlsx.readFile(filePath);
+    const worksheet = workbook.worksheets[0];
+    if (!worksheet) throw new Error("Excel 文件中没有工作表");
+
+    // 取第一行作为 header
+    const headerRow = worksheet.getRow(1);
+    const headers = [];
+    headerRow.eachCell({ includeEmpty: true }, (cell, colNum) => {
+      headers[colNum] = String(cell.value || "").trim();
+    });
+
+    const rows = [];
+    worksheet.eachRow({ includeEmpty: false }, (row, rowNum) => {
+      if (rowNum === 1) return; // 跳过 header
+      const obj = {};
+      row.eachCell({ includeEmpty: true }, (cell, colNum) => {
+        const key = headers[colNum] || String(colNum);
+        obj[key] = cell.value != null ? String(cell.value).trim() : "";
+      });
+      rows.push(obj);
+    });
+
     if (!rows.length) throw new Error("文件中没有数据行");
     return rows.map((row) => ({
-      "AD-name": (row["AD-name"] || "").toString().trim(),
-      "AD-mail": (row["AD-mail"] || "").toString().trim(),
-      "Github-name": (row["Github-name"] || "").toString().trim(),
-      "Github-mail": (row["Github-mail"] || "").toString().trim(),
+      "AD-name": (row["AD-name"] || "").trim(),
+      "AD-mail": (row["AD-mail"] || "").trim(),
+      "Github-name": (row["Github-name"] || "").trim(),
+      "Github-mail": (row["Github-mail"] || "").trim(),
     }));
   }
 
@@ -57,10 +76,10 @@ module.exports = function createUserMappingRouter({ userMappingService, usageSto
   router.get("/analytics", (_req, res) => res.sendFile(path.join(__dirname, "..", "public", "analytics.html")));
 
   /* ── Upload mapping file ── */
-  router.post("/user/upload-members", upload.single("file"), (req, res) => {
+  router.post("/user/upload-members", upload.single("file"), async (req, res) => {
     try {
       if (!req.file) { res.status(400).json({ ok: false, message: "没有收到上传文件" }); return; }
-      const jsonData = convertXlsxToJson(req.file.path);
+      const jsonData = await convertXlsxToJson(req.file.path);
       try { fs.unlinkSync(req.file.path); } catch { /* noop */ }
       const outPath = path.join(userDataDir, "user_mapping.json");
       fs.mkdirSync(userDataDir, { recursive: true });
