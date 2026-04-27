@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Team 月度账单 — Copilot Dashboard</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="page">
+      <section class="card">
+        <header class="topbar">
+          <div class="topbar-row">
+            <h1>Team 月度账单</h1>
+            <a href="/" class="back-link">&larr; 返回主页</a>
+          </div>
+        </header>
+
+        <div class="query-bar">
+          <div class="query-bar-left">
+            <input type="month" id="monthPicker" class="month-picker" />
+            <button id="queryBtn" class="refresh-btn">查询</button>
+          </div>
+        </div>
+
+        <div id="statusBanner" class="bill-banner" hidden></div>
+        <p id="meta" class="meta">选择月份后点击"查询"</p>
+        <div id="error" class="error" hidden></div>
+
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th style="width:28px"></th>
+                <th>Team</th>
+                <th>成员数</th>
+                <th>席位费 (USD)</th>
+                <th>套餐外附加费 (USD)</th>
+                <th>总费用 (USD)</th>
+              </tr>
+            </thead>
+            <tbody id="tbody">
+              <tr><td colspan="6" class="empty">请选择月份并点击"查询"。</td></tr>
+            </tbody>
+            <tfoot id="tfoot"></tfoot>
+          </table>
+        </div>
+      </section>
+    </main>
+
+    <script src="./common.js"></script>
+    <script src="./billpage.js"></script>
+  </body>
+</html>
