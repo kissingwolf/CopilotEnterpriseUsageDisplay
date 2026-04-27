@@ -35,6 +35,7 @@
 - **三层缓存架构** — 内存缓存（5 分钟） → SQLite 持久缓存（90 天） → GitHub API，大幅减少 API 调用
 - **ETag 条件请求** — 数据未变化时返回 304 Not Modified，不消耗 API 配额
 - **数据分析页面** — 独立页面提供用量趋势图、Top 用户排行柱状图、汇总统计卡片（30 天 / 90 天 / 1 年）
+- **Team 月度账单** — 独立页面 `/billpage`，按月查看 Team 维度账单，显示席位费、套餐外附加费、总费用，支持展开查看用户明细，历史数据持久化到 SQLite
 - **缓存命中率展示** — 页面顶部显示缓存命中百分比，直观反映 API 调用节省效果
 - **并发请求合并（In-flight Dedup）** — 多个浏览器标签页同时刷新时自动复用同一请求，避免重复查询
 
@@ -54,7 +55,7 @@ routes/
   seats.js              Copilot 席位数据加载器（共享模块）
 lib/
   github-api.js         GitHub API 服务层（LRU 缓存、ETag、并发队列、重试退避、single-flight）
-  usage-store.js        SQLite 持久缓存层（预编译语句、席位快照清理）
+  usage-store.js        SQLite 持久缓存层（预编译语句、席位快照清理、月度账单存储）
   user-mapping.js       用户映射服务（fs.watch + debounce 热重载）
   billing-config.js     计费配置与费用计算
   date-utils.js         日期工具函数
@@ -65,6 +66,7 @@ public/
   index.html / script.js      主页面（用量排行、排序、模态框、分页）
   costcenter.html / costcenter.js  Cost Center 管理页
   analytics.html / analytics.js    数据分析页（含数据新鲜度提示）
+  billpage.html / billpage.js      Team 月度账单页
   user.html / user.js              用户映射管理页
   styles.css            全局样式
 test/
@@ -115,6 +117,7 @@ data/
 | `GET` | `/api/analytics/trends?range=30` | 每日用量趋势数据（Chart.js 趋势图） |
 | `GET` | `/api/analytics/top-users?range=30` | Top 20 用户排名（Chart.js 柱状图） |
 | `GET` | `/api/analytics/daily-summary?range=30` | 汇总统计（总量、日均、有数据天数） |
+| `GET` | `/api/bill?year=2026&month=4` | Team 月度账单（席位费 + 超额费 + 总费用，按 Team 分组） |
 
 ## 快速开始
 
@@ -215,6 +218,7 @@ node ./scripts/preflight-check.js --strict
 | `teamCache` | 内存对象 | 10 分钟 | Copilot 席位列表 |
 | `daily_usage` | SQLite 表 | 90 天 | 每日用量原始数据 + per-user 排名 |
 | `seats_snapshot` | SQLite 表 | 10 分钟 | 席位快照，启动恢复 |
+| `monthly_bill` | SQLite 表 | 持久化 | Team 月度账单计算结果 |
 | `etag_cache` | SQLite 表 | 持久化 | ETag 持久化，重启恢复 |
 
 ### 缓存命中率

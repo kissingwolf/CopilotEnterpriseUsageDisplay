@@ -36,6 +36,7 @@ app.use(require("./routes/teams")(deps));
 app.use(require("./routes/costcenter")());
 app.use(require("./routes/analytics")(deps));
 app.use(require("./routes/user-mapping")(deps));
+app.use(require("./routes/bill")(deps));
 
 /* ── Health check endpoint ── */
 app.get("/api/health", (_req, res) => {
@@ -45,6 +46,11 @@ app.get("/api/health", (_req, res) => {
     memoryMB: Math.round(process.memoryUsage().rss / 1024 / 1024),
     timestamp: new Date().toISOString(),
   });
+});
+
+/* ── Page routes ── */
+app.get("/billpage", (_req, res) => {
+  res.sendFile(path.join(__dirname, "public", "billpage.html"));
 });
 
 /* ── Wildcard fallback (SPA) ── */

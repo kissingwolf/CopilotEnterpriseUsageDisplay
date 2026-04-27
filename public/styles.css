@@ -1078,3 +1078,57 @@ tbody tr:hover {
 .chart-container canvas {
   max-width: 100%;
 }
+
+/* ── Bill page ── */
+.month-picker {
+  padding: 6px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  font-size: 14px;
+  background: var(--card);
+  color: var(--ink);
+}
+
+.bill-banner {
+  margin: 0;
+  padding: 10px 24px;
+  font-size: 14px;
+  font-weight: 500;
+  border-bottom: 1px solid var(--line);
+}
+.bill-banner-warn {
+  background: #fff3cd;
+  color: #856404;
+}
+.bill-banner-info {
+  background: #d1ecf1;
+  color: #0c5460;
+}
+
+.bill-team-row:hover td {
+  background: #f0faf5;
+}
+.bill-toggle {
+  font-size: 12px;
+  color: var(--muted);
+  text-align: center;
+  width: 28px;
+}
+.bill-user-row td {
+  background: #fcfaf4;
+  font-size: 13px;
+  border-bottom: 1px dashed var(--line);
+}
+.bill-user-login {
+  padding-left: 24px !important;
+  color: var(--accent);
+  font-weight: 500;
+}
+.bill-user-detail {
+  color: var(--muted);
+  font-size: 12px;
+}
+.bill-total-row td {
+  border-top: 2px solid var(--ink);
+  background: #f8f6ef;
+}
