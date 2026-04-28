@@ -147,7 +147,10 @@ module.exports = function createUsageRouter({ usageStore, teamCache, userMapping
   async function refreshForDateOverride(dateOverride) {
     const cacheKey = JSON.stringify(dateOverride || {});
     const cached = refreshCache.get(cacheKey);
-    if (cached && Date.now() - cached.ts < CACHE_TTL_MS) return { result: cached.result, cacheHit: "memory" };
+    if (cached && Date.now() - cached.ts < CACHE_TTL_MS) {
+      logger.debug({ cacheKey, ageMs: Date.now() - cached.ts }, "Refresh cache hit");
+      return { result: cached.result, cacheHit: "memory" };
+    }
     if (refreshInFlight.has(cacheKey)) return { result: (await refreshInFlight.get(cacheKey)).result, cacheHit: "shared" };
     const promise = _refreshImpl(dateOverride, cacheKey);
     refreshInFlight.set(cacheKey, promise);
@@ -169,6 +172,7 @@ module.exports = function createUsageRouter({ usageStore, teamCache, userMapping
     if (day) {
       const cachedDay = usageStore.getDay(dateKey);
       if (cachedDay && Date.now() - new Date(cachedDay.fetched_at).getTime() < USAGE_TTL_MS) {
+        logger.debug({ dateKey, source: "sqlite" }, "SQLite cache hit");
         let ranking = cachedDay.ranking || aggregateRanking(cachedDay.data);
         let mode = cachedDay.mode;
         const usageItems = Array.isArray(cachedDay.data?.usageItems) ? cachedDay.data.usageItems : [];
@@ -203,6 +207,7 @@ module.exports = function createUsageRouter({ usageStore, teamCache, userMapping
     /* Fetch from GitHub */
     const endpoint = buildEndpoint();
     const extra = dateOverride || {};
+    logger.debug({ dateKey, endpoint: endpoint.path }, "Fetching from GitHub API");
     const data = await githubGetJson(endpoint.path, buildQueryParams(extra));
     let ranking = aggregateRanking(data, !day);
     let mode = "direct";
