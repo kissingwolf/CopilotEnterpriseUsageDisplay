@@ -11,6 +11,10 @@
   var errorBox = document.getElementById("error");
   var tbody = document.getElementById("tbody");
   var tfoot = document.getElementById("tfoot");
+  var teamFilterBtn = document.getElementById("teamFilterBtn");
+  var teamFilterDropdown = document.getElementById("teamFilterDropdown");
+  var teamFilterAll = document.getElementById("teamFilterAll");
+  var teamFilterList = document.getElementById("teamFilterList");
 
   /* ── Init month picker to current month ── */
   var now = new Date();
@@ -20,6 +24,9 @@
 
   /* ── State ── */
   var expandedTeams = {};
+  // null = all selected (default). Otherwise a Set of selected team names.
+  var selectedTeams = null;
+  var allTeams = [];
 
   /* ── Helpers ── */
   function setError(msg) { C.setError(errorBox, msg); }
@@ -49,10 +56,21 @@
       meta.textContent = data.yearMonth + " | " + data.message;
     }
 
-    var teams = data.teams || [];
+    var allTeamsData = data.teams || [];
+    rebuildTeamFilter(allTeamsData);
+
+    // Apply filter: when a subset is selected, hide unselected teams entirely.
+    var teams = allTeamsData;
+    var hasFilter = selectedTeams !== null;
+    if (hasFilter) {
+      teams = allTeamsData.filter(function (t) { return selectedTeams.has(t.team); });
+    }
+
     if (teams.length === 0) {
-      tbody.innerHTML = '<tr><td colspan="6" class="empty">' +
-        (data.status === "aggregating" ? C.escapeHtml(data.message) : "暂无账单数据") + '</td></tr>';
+      var emptyMsg = allTeamsData.length === 0
+        ? (data.status === "aggregating" ? C.escapeHtml(data.message) : (data.message ? C.escapeHtml(data.message) : "暂无账单数据"))
+        : "当前筛选下无 Team";
+      tbody.innerHTML = '<tr><td colspan="6" class="empty">' + emptyMsg + '</td></tr>';
       tfoot.innerHTML = "";
       return;
     }
@@ -60,7 +78,9 @@
     var html = "";
     for (var i = 0; i < teams.length; i++) {
       var t = teams[i];
-      var isExpanded = expandedTeams[t.team];
+      // When user filters a subset, force-expand selected teams to show details.
+      // When all are selected (default), respect manual click toggles.
+      var isExpanded = hasFilter ? true : !!expandedTeams[t.team];
       var arrow = isExpanded ? "\u25BC" : "\u25B6";
 
       html += '<tr class="bill-team-row" data-team-idx="' + i + '">' +
@@ -89,8 +109,19 @@
     }
     tbody.innerHTML = html;
 
-    // Grand total footer
-    var gt = data.grandTotal || {};
+    // Grand total footer — reflect only visible teams when filtered
+    var gt;
+    if (hasFilter) {
+      gt = { seatCost: 0, overageCost: 0, totalCost: 0, totalMembers: 0 };
+      for (var k = 0; k < teams.length; k++) {
+        gt.seatCost += teams[k].seatCost || 0;
+        gt.overageCost += teams[k].overageCost || 0;
+        gt.totalCost += teams[k].totalCost || 0;
+        gt.totalMembers += teams[k].members || 0;
+      }
+    } else {
+      gt = data.grandTotal || {};
+    }
     tfoot.innerHTML = '<tr class="bill-total-row">' +
       '<td></td>' +
       '<td><strong>合计</strong></td>' +
@@ -100,10 +131,11 @@
       '<td><strong>' + formatUsd(gt.totalCost) + '</strong></td>' +
       '</tr>';
 
-    // Attach toggle events
+    // Attach toggle events (only meaningful when no filter is active)
     tbody.querySelectorAll(".bill-team-row").forEach(function (row) {
       row.style.cursor = "pointer";
       row.addEventListener("click", function () {
+        if (selectedTeams !== null) return; // ignore clicks when filtered
         var idx = Number(row.dataset.teamIdx);
         var teamName = teams[idx].team;
         expandedTeams[teamName] = !expandedTeams[teamName];
@@ -111,6 +143,49 @@
       });
     });
   }
+
+  /* ── Team filter ── */
+  function rebuildTeamFilter(teamsData) {
+    var teamSet = new Set();
+    teamsData.forEach(function (t) { teamSet.add(t.team); });
+    var teams = Array.from(teamSet).sort();
+    if (JSON.stringify(teams) === JSON.stringify(allTeams)) return;
+    allTeams = teams;
+    teamFilterList.innerHTML = teams.map(function (team) {
+      var checked = !selectedTeams || selectedTeams.has(team) ? "checked" : "";
+      return '<label class="team-filter-item"><input type="checkbox" value="' + C.escapeHtml(team) + '" ' + checked + ' /> ' + C.escapeHtml(team) + '</label>';
+    }).join("");
+    updateAllCheckbox();
+  }
+  function getCheckedTeams() {
+    var boxes = teamFilterList.querySelectorAll('input[type="checkbox"]');
+    var checked = [];
+    boxes.forEach(function (cb) { if (cb.checked) checked.push(cb.value); });
+    return checked;
+  }
+  function updateAllCheckbox() {
+    var boxes = teamFilterList.querySelectorAll('input[type="checkbox"]');
+    var total = boxes.length, checked = getCheckedTeams().length;
+    teamFilterAll.checked = checked === total && total > 0;
+    teamFilterAll.indeterminate = checked > 0 && checked < total;
+    teamFilterBtn.textContent = (total === 0 || checked === total) ? "Team \u7b5b\u9009 \u25be" : "Team \u7b5b\u9009 (" + checked + ") \u25be";
+    teamFilterBtn.classList.toggle("active", total > 0 && checked < total);
+  }
+  function applyTeamFilter() {
+    var checked = getCheckedTeams();
+    selectedTeams = checked.length === allTeams.length ? null : new Set(checked);
+    updateAllCheckbox();
+    if (lastData) renderBill(lastData);
+  }
+  teamFilterBtn.addEventListener("click", function (e) { e.stopPropagation(); teamFilterDropdown.classList.toggle("open"); });
+  teamFilterAll.addEventListener("change", function () {
+    var boxes = teamFilterList.querySelectorAll('input[type="checkbox"]');
+    var state = teamFilterAll.checked;
+    boxes.forEach(function (cb) { cb.checked = state; });
+    applyTeamFilter();
+  });
+  teamFilterList.addEventListener("change", applyTeamFilter);
+  document.addEventListener("click", function (e) { if (!e.target.closest("#teamFilter")) teamFilterDropdown.classList.remove("open"); });
 
   /* ── Query ── */
   var lastData = null;

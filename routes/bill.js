@@ -128,6 +128,7 @@ module.exports = function createBillRouter({ usageStore, teamCache, userMappingS
 
   /**
    * Compute and persist bill rows for a given month.
+   * Returns { billRows, hasUsage }.
    */
   async function computeBill(year, month, period) {
     await ensureSeatsData(teamCache, usageStore);
@@ -145,9 +146,19 @@ module.exports = function createBillRouter({ usageStore, teamCache, userMappingS
       usageMap = await fetchMonthUsage(year, month);
     }
 
+    const yearMonth = yearMonthKey(year, month);
+
+    // If no usage data at all for the month, treat as "no bill" (don't charge
+    // current seats for a month that has no activity). Also clean up any stale
+    // cached bill rows so future queries don't return incorrect data.
+    if (!usageMap || usageMap.size === 0) {
+      usageStore.deleteBill(yearMonth);
+      logger.info({ yearMonth }, "No usage data for month, returning empty bill");
+      return { billRows: [], hasUsage: false };
+    }
+
     // 2. Build per-user bill rows
     const computedAt = new Date().toISOString();
-    const yearMonth = yearMonthKey(year, month);
     const billRows = [];
 
     for (const seat of seats) {
@@ -182,7 +193,7 @@ module.exports = function createBillRouter({ usageStore, teamCache, userMappingS
     usageStore.saveBill(yearMonth, billRows);
     logger.info({ yearMonth, users: billRows.length }, "Computed and saved monthly bill");
 
-    return billRows;
+    return { billRows, hasUsage: true };
   }
 
   /**
@@ -249,14 +260,27 @@ module.exports = function createBillRouter({ usageStore, teamCache, userMappingS
 
       // Check SQLite cache
       let billRows;
+      let noUsage = false;
       const cached = usageStore.hasBill(ym);
 
       if (cached && period.status === "complete") {
         // Historical month with cached data — use directly
         billRows = usageStore.getBill(ym);
+        // Guard: detect stale "empty-month" cache written before the no-usage
+        // fix (all rows had seat cost but zero requests). Recompute in that
+        // case so the cleanup path runs.
+        const totalRequests = billRows.reduce((s, r) => s + (r.requests || 0), 0);
+        if (billRows.length > 0 && totalRequests === 0) {
+          logger.info({ yearMonth: ym }, "Cached bill has zero usage, recomputing");
+          const result = await computeBill(year, month, period);
+          billRows = result.billRows;
+          noUsage = result.hasUsage === false;
+        }
       } else {
         // Current month or no cache — compute
-        billRows = await computeBill(year, month, period);
+        const result = await computeBill(year, month, period);
+        billRows = result.billRows;
+        noUsage = result.hasUsage === false;
       }
 
       const teams = groupByTeam(billRows);
@@ -277,7 +301,7 @@ module.exports = function createBillRouter({ usageStore, teamCache, userMappingS
         ok: true,
         yearMonth: ym,
         status: period.status,
-        message: period.message,
+        message: noUsage ? "该月暂无 Copilot 使用数据" : period.message,
         dateRange: { start: period.start, end: period.end },
         teams,
         grandTotal,
