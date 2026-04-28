@@ -416,6 +416,47 @@ sudo systemctl reload nginx
 
 ## 更新日志
 
+### v2.1 — 日志体系增强
+
+- **五级日志级别** — pino 日志支持 trace < debug < info < warn < error，按级别输出不同详细程度
+- **结构化访问日志** — HTTP 中间件自动记录访问时间、来源 IP、来源主机名、访问页面、业务动作、成功/失败、HTTP 状态码、响应时间(ms)
+- **URL-to-Action 映射** — 将 API 路径映射为语义化动作标签（如 `refresh_usage`、`get_seats`、`health_check`）
+- **敏感信息自动脱敏** — 日志红字过滤自动遮蔽 Authorization Header、Token、Password、Secret 字段，输出 `[REDACTED]`
+- **自定义序列化器** — 请求日志提取 `remoteAddress`/`remoteHostname`/`userAgent`，错误日志捕获完整堆栈追踪
+- **Debug 级缓存追踪** — GitHub API LRU 缓存命中/未命中、ETag 条件请求、In-flight 去重、SQLite 缓存命中均输出 debug 日志
+- **错误日志增强** — 全局错误中间件输出完整访问上下文（IP、主机名、动作），便于故障定位
+- **dotenv 加载顺序修复** — 将 `dotenv.config()` 移至 `server.js` 入口首行，确保 `LOG_LEVEL` 等环境变量在模块初始化前就绪
+
+**日志级别策略：**
+
+| 级别 | 使用场景 | 示例输出 |
+|------|----------|----------|
+| `trace` | 完整请求/响应体、SQL 语句、GitHub API 原始响应 | （需手动设置 `LOG_LEVEL=trace`） |
+| `debug` | 缓存命中/未命中、ETag 条件请求、In-flight 去重、重试次数 | `LRU cache hit`、`ETag conditional request` |
+| `info` | HTTP 访问日志（默认生产级别） | 访问时间、IP、页面、动作、成功与否、响应时间 |
+| `warn` | API 速率限制接近阈值、重试等待、非关键性恢复 | `GitHub API retry` |
+| `error` | 未捕获异常、GitHub API 失败、数据库错误、堆栈追踪 | `Unhandled route error` + stack |
+
+**新增环境变量：**
+
+| 变量 | 默认值 | 说明 |
+|------|--------|------|
+| `LOG_LEVEL` | 开发: `debug` / 生产: `info` | 控制日志输出级别，可选 `trace`、`debug`、`info`、`warn`、`error` |
+
+**开发环境日志示例（`LOG_LEVEL=debug`）：**
+
+```
+2026-04-28 21:06:00 INFO: Dashboard running (port=3000)
+2026-04-28 21:06:05 INFO: {"time":"2026-04-28T13:06:05Z","remoteAddress":"192.168.1.100","remoteHostname":"unknown","method":"GET","url":"/api/usage","action":"get_usage","success":true,"statusCode":200,"responseTime":12}
+2026-04-28 21:06:05 DEBUG: LRU cache hit (pathname=/enterprises/.../copilot/billing/seats)
+```
+
+**生产环境日志示例（`LOG_LEVEL=info`）：**
+
+```json
+{"level":"info","time":"2026-04-28T13:06:05Z","time":"2026-04-28T13:06:05.000Z","remoteAddress":"192.168.1.100","remoteHostname":"unknown","method":"GET","url":"/api/usage","action":"get_usage","success":true,"statusCode":200,"responseTime":12}
+```
+
 ### v2 — 架构重构
 
 - **模块化拆分** — `server.js` 从 ~1950 行精简为 ~100 行入口文件，业务逻辑拆分为 7 个路由模块 + 6 个 lib 模块
