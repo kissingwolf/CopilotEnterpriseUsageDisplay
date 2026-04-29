@@ -5,11 +5,12 @@
 const express = require("express");
 const logger = require("../lib/logger");
 const { PLAN_CONFIG, calcAmount } = require("../lib/billing-config");
-const { githubGetJson } = require("../lib/github-api");
+const { githubGetJson, MAX_CONCURRENT_GITHUB } = require("../lib/github-api");
 const { toNumber, pickUser, writeError, buildQueryParams, buildEndpoint } = require("../lib/helpers");
+const { enumerateDays } = require("../lib/date-utils");
 const { ensureSeatsData } = require("./seats");
 
-module.exports = function createBillRouter({ usageStore, teamCache, userMappingService }) {
+module.exports = function createBillRouter({ usageStore, teamCache, userMappingService, usageRouter }) {
   const router = express.Router();
 
   /* ── helpers ── */
@@ -305,6 +306,96 @@ module.exports = function createBillRouter({ usageStore, teamCache, userMappingS
         dateRange: { start: period.start, end: period.end },
         teams,
         grandTotal,
+      });
+    } catch (error) {
+      writeError(res, error);
+    }
+  });
+
+  /**
+   * POST /api/bill/refresh
+   * Force-refresh a whole month: drop SQLite daily/monthly cache for the
+   * month, re-fetch every day from GitHub, recompute the bill, and return.
+   * Body: { year, month }
+   */
+  router.post("/api/bill/refresh", async (req, res) => {
+    try {
+      const now = new Date();
+      const year = Number(req.body?.year) || now.getFullYear();
+      const month = Number(req.body?.month) || (now.getMonth() + 1);
+      if (month < 1 || month > 12) throw new Error("无效的月份");
+      if (year < 2020 || year > 2100) throw new Error("无效的年份");
+
+      const ym = yearMonthKey(year, month);
+      const period = resolveBillPeriod(year, month);
+
+      if (period.status === "aggregating") {
+        return res.json({
+          ok: true, yearMonth: ym, status: period.status,
+          message: period.message, dateRange: null,
+          refreshedDays: 0, failedDates: [],
+          teams: [], grandTotal: { seatCost: 0, overageCost: 0, totalCost: 0, totalMembers: 0 },
+          fetchedAt: new Date().toISOString(),
+        });
+      }
+
+      const days = enumerateDays(period.start, period.end);
+      if (days.length === 0) throw new Error("无效的账单周期范围");
+
+      const forceRefreshDay = usageRouter && usageRouter.forceRefreshDay;
+      if (typeof forceRefreshDay !== "function") {
+        throw new Error("内部错误：forceRefreshDay 未注入");
+      }
+
+      logger.info({ yearMonth: ym, days: days.length }, "Force-refreshing month");
+
+      // 1. Wipe stale cached rows for this month so nothing falls back to them.
+      const removedDaily = usageStore.deleteDaysInMonth(year, month);
+      usageStore.deleteBill(ym);
+      logger.info({ yearMonth: ym, removedDaily }, "Cleared SQLite cache for month");
+
+      // 2. Refresh every day in the period (concurrent, throttled).
+      const failedDates = [];
+      let refreshedDays = 0;
+      for (let i = 0; i < days.length; i += MAX_CONCURRENT_GITHUB) {
+        const chunk = days.slice(i, i + MAX_CONCURRENT_GITHUB);
+        const results = await Promise.allSettled(
+          chunk.map((d) => {
+            const dateStr = `${d.year}-${String(d.month).padStart(2, "0")}-${String(d.day).padStart(2, "0")}`;
+            return forceRefreshDay(dateStr).then(() => dateStr);
+          })
+        );
+        for (let j = 0; j < results.length; j += 1) {
+          const r = results[j];
+          const d = chunk[j];
+          const dateStr = `${d.year}-${String(d.month).padStart(2, "0")}-${String(d.day).padStart(2, "0")}`;
+          if (r.status === "fulfilled") refreshedDays += 1;
+          else { failedDates.push(dateStr); logger.warn({ date: dateStr, err: r.reason && r.reason.message }, "Day refresh failed"); }
+        }
+      }
+
+      // 3. Recompute the monthly bill from the fresh daily rows.
+      const { billRows, hasUsage } = await computeBill(year, month, period);
+      const teams = groupByTeam(billRows);
+      const grandTotal = { seatCost: 0, overageCost: 0, totalCost: 0, totalMembers: 0 };
+      for (const t of teams) {
+        grandTotal.seatCost = Math.round((grandTotal.seatCost + t.seatCost) * 10000) / 10000;
+        grandTotal.overageCost = Math.round((grandTotal.overageCost + t.overageCost) * 10000) / 10000;
+        grandTotal.totalCost = Math.round((grandTotal.totalCost + t.totalCost) * 10000) / 10000;
+        grandTotal.totalMembers += t.members;
+      }
+
+      res.json({
+        ok: true,
+        yearMonth: ym,
+        status: period.status,
+        message: hasUsage ? period.message : "该月暂无 Copilot 使用数据",
+        dateRange: { start: period.start, end: period.end },
+        refreshedDays,
+        failedDates,
+        teams,
+        grandTotal,
+        fetchedAt: new Date().toISOString(),
       });
     } catch (error) {
       writeError(res, error);

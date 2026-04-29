@@ -35,7 +35,11 @@
 - **三层缓存架构** — 内存缓存（5 分钟） → SQLite 持久缓存（90 天） → GitHub API，大幅减少 API 调用
 - **ETag 条件请求** — 数据未变化时返回 304 Not Modified，不消耗 API 配额
 - **数据分析页面** — 独立页面提供用量趋势图、Top 用户排行柱状图、汇总统计卡片（30 天 / 90 天 / 1 年）
-- **Team 月度账单** — 独立页面 `/billpage`，按月查看 Team 维度账单，显示席位费、套餐外附加费、总费用，支持展开查看用户明细，历史数据持久化到 SQLite
+- **Team 月度账单** — 独立页面 `/billpage`，按月查看 Team 维度账单，显示席位费、套餐外附加费、总费用，支持展开查看用户明细，历史数据持久化到 SQLite（仅通过直接访问 URL `/billpage` 进入，主页不展示入口）
+- **按月强制刷新兑底** — `/billpage` 页面提供“强制刷新”按钮：二次确认后会清空选中月份的 SQLite 缓存、逐日回源 GitHub API并重新计算账单，作为缓存错误、空数据或 API 数据延迟场景下的兑底手段
+- **按日强制回源** — `POST /api/usage/refresh` 支持 `force:true` 参数，跳过内存与 SQLite TTL 检查，直接拉取最新数据并覆盖写入
+- **动态 TTL抖动防护** — 近 3 天的日期采用 1 小时 SQLite TTL，更老的日期使用 90 天 TTL，避免因 GitHub Billing API 24–48h 延迟期写入不完整数据后被“锁死”
+- **内置自动刷新调度器**（默认开启）— 服务启动后自动刷新当天数据；每天 03:00 / 12:00 强制刷新今天 + 剩下的近 N 天（默认 N=2），避免依赖人工点击刷新。可通过环境变量关闭或调整时间
 - **缓存命中率展示** — 页面顶部显示缓存命中百分比，直观反映 API 调用节省效果
 - **并发请求合并（In-flight Dedup）** — 多个浏览器标签页同时刷新时自动复用同一请求，避免重复查询
 
@@ -56,6 +60,7 @@ routes/
 lib/
   github-api.js         GitHub API 服务层（LRU 缓存、ETag、并发队列、重试退避、single-flight）
   usage-store.js        SQLite 持久缓存层（预编译语句、席位快照清理、月度账单存储）
+  scheduler.js          轻量自动刷新调度器（setTimeout 自重排，启动时刷今天、定时点刷近 N 天）
   user-mapping.js       用户映射服务（fs.watch + debounce 热重载）
   billing-config.js     计费配置与费用计算
   date-utils.js         日期工具函数
@@ -108,7 +113,8 @@ data/
 | Method | Path | 用途 |
 | --- | --- | --- |
 | `GET` | `/api/health` | 健康检查端点，返回服务运行状态 |
-| `POST` | `/api/usage/refresh` | 刷新用量数据，支持按日期/日期范围/默认三种查询模式 |
+| `POST` | `/api/usage/refresh` | 刷新用量数据，支持按日期/日期范围/默认三种查询模式；请求体可传 `force:true` 跳过内存与 SQLite 缓存强制回源 |
+| `POST` | `/api/bill/refresh` | **按月强制刷新**：请求体 `{year, month}`，清空该月所有 `daily_usage` 与 `monthly_bill` 缓存后逐日回源 GitHub，重新计算账单 |
 | `GET` | `/api/seats` | 获取 Copilot 席位数据（支持 `?refresh=1` 强制刷新） |
 | `GET` | `/api/teams` | 获取 Enterprise Teams 列表（含成员数） |
 | `GET` | `/api/cost-centers` | 获取 Cost Center 列表 |
@@ -118,6 +124,8 @@ data/
 | `GET` | `/api/analytics/top-users?range=30` | Top 20 用户排名（Chart.js 柱状图） |
 | `GET` | `/api/analytics/daily-summary?range=30` | 汇总统计（总量、日均、有数据天数） |
 | `GET` | `/api/bill?year=2026&month=4` | Team 月度账单（席位费 + 超额费 + 总费用，按 Team 分组） |
+
+> 详细的“强制刷新”与“自动刷新调度器”使用说明见后文《强制刷新与自动刷新》小节。
 
 ## 快速开始
 
@@ -202,6 +210,10 @@ node ./scripts/preflight-check.js --strict
 | `GITHUB_MAX_RETRIES` | 否 | GitHub API 请求遇错和被限流时的最大重试次数，默认 `3` |
 | `GITHUB_API_BASE` | 否 | API 地址，默认 `https://api.github.com` |
 | `PORT` | 否 | 服务端口，默认 `3000` |
+| `SCHED_DISABLED` | 否 | 设为 `true` 可关闭内置自动刷新调度器（默认开启，多副本部署时可在其他副本上关闭） |
+| `SCHED_DAILY_TIMES` | 否 | 逗号分隔的本地时间 `HH:MM` 列表，默认 `03:00,12:00` |
+| `SCHED_BACKFILL_DAYS` | 否 | 调度器每次运行时除今天外额外回填的天数，默认 `2`（即今天+昨天+前天） |
+| `SCHED_STARTUP_DELAY_MS` | 否 | 启动后首次刷今天数据的延迟毫秒数，默认 `5000` |
 
 ## 缓存架构
 
@@ -216,7 +228,7 @@ node ./scripts/preflight-check.js --strict
 | `refreshCache` | 内存 Map | 5 分钟 | 最近查询的用量排名 |
 | `etagCache` | 内存 Map + SQLite | 持久化 | GitHub API 条件请求 (304) |
 | `teamCache` | 内存对象 | 10 分钟 | Copilot 席位列表 |
-| `daily_usage` | SQLite 表 | 90 天 | 每日用量原始数据 + per-user 排名 |
+| `daily_usage` | SQLite 表 | 动态：近 3 天 1 小时，更老 90 天 | 每日用量原始数据 + per-user 排名 |
 | `seats_snapshot` | SQLite 表 | 10 分钟 | 席位快照，启动恢复 |
 | `monthly_bill` | SQLite 表 | 持久化 | Team 月度账单计算结果 |
 | `etag_cache` | SQLite 表 | 持久化 | ETag 持久化，重启恢复 |
@@ -227,6 +239,60 @@ node ./scripts/preflight-check.js --strict
 - **100%** = 全部从 SQLite 读取，零 GitHub 调用
 - **50%** = 一半日期命中缓存，另一半调用了 GitHub
 - **0%** = 全部为首次查询，需逐个调用 GitHub API
+
+## 强制刷新与自动刷新
+
+由于 GitHub Billing API 存在 24–48 小时的数据延迟，首次拉取某天数据时可能得到空或不完整结果。为避免这些数据被默认 90 天的 SQLite 缓存“锁死”，系统提供三种刷新途径：
+
+### 1) 自动刷新调度器（默认开启）
+
+- 服务启动后会延迟数秒自动强制刷新当天数据，保证首次访问时数据为最新。
+- 每天 `03:00` 与 `12:00`（本地时间）会自动强制刷新今天 + 最近 N 天（默认 N=2，即 今天 + 昨天 + 前天）。
+- 多副本部署时，可在非主副本上设置 `SCHED_DISABLED=true` 关闭，避免重复调用 GitHub API。
+- 调度时间点、回填天数、启动延时可通过 `SCHED_DAILY_TIMES`、`SCHED_BACKFILL_DAYS`、`SCHED_STARTUP_DELAY_MS` 调整。
+
+### 2) 按月强制刷新（推荐作为兜底手段）
+
+适用于：历史账单出现明显偏差、怀疑缓存中已写入不完整数据、Token 替换后需要重新拉取等场景。
+
+- **页面操作**：手动访问 `/billpage`（主页不展示入口）→ 选择月份 → 点击“强制刷新” → 二次确认后等待逐日回源完成。
+- **API 调用**：
+
+  ```bash
+  curl -X POST http://localhost:3000/api/bill/refresh \
+    -H "Content-Type: application/json" \
+    -d '{"year":2026,"month":4}'
+  ```
+
+  实现步骤：
+
+  1. 根据账单周期枚举该月所有日期（当月仅枚举至昨天）
+  2. 删除 SQLite 中该月的 `daily_usage` 与 `monthly_bill` 记录
+  3. 受 `GITHUB_MAX_CONCURRENT` 限制的并发逐日回源 GitHub API（每日带 `force=true`）
+  4. 重新计算 Team 月度账单并写入 `monthly_bill`，返回 `refreshedDays` 与 `failedDates`
+
+### 3) 按日强制刷新（精细控制）
+
+```bash
+# 单日强制回源
+curl -X POST http://localhost:3000/api/usage/refresh \
+  -H "Content-Type: application/json" \
+  -d '{"queryMode":"single","date":"2026-04-28","force":true}'
+
+# 日期范围强制回源（最多 31 天）
+curl -X POST http://localhost:3000/api/usage/refresh \
+  -H "Content-Type: application/json" \
+  -d '{"queryMode":"range","startDate":"2026-04-26","endDate":"2026-04-28","force":true}'
+```
+
+`force:true` 同时跳过内存层 `refreshCache` 与 SQLite TTL，但仍会进入 single-flight 去重，避免同参数并发请求重复打 GitHub API。
+
+### 账单页访问说明
+
+账单页为**隐式入口**，主页不提供点击跳转，需手动访问 URL：
+
+- 路径：`http://<host>:<port>/billpage`
+- 能力：按月查询 Team 账单、按 Team 多选筛选、点击展开查看用户明细、强制刷新选中月份。
 
 ## 自检脚本说明
 
@@ -415,6 +481,17 @@ sudo systemctl reload nginx
 | Enterprise | 1000 requests | $39 | $0.04/request |
 
 ## 更新日志
+
+### v2.2 — 数据新鲜度与刷新可靠性
+
+- **`force=true` 强制回源参数** — `POST /api/usage/refresh` 新增 `force` 布尔参数，置 true 时同时跳过内存层 `refreshCache` 与 SQLite TTL 检查，直接调用 GitHub API 并覆盖写入；single-flight 去重仍生效，不会因并发触发重复调用
+- **动态 TTL 抖动防护** — `daily_usage` 表的缓存有效期由固定 90 天调整为分段策略：距今 ≤ 3 天的日期使用 1 小时 TTL，更老的日期沿用 90 天 TTL。彻底避免 GitHub Billing API 的 24–48 小时延迟期写入空/不完整数据后被长期缓存锁死
+- **内置自动刷新调度器** — 新增 `lib/scheduler.js`，基于 `setTimeout` 自重排实现轻量级调度（不引入新依赖）。默认开启，启动后强制刷新当天数据，每天 03:00 与 12:00 自动强制刷新今天 + 最近 N 天（默认 N=2）。失败仅记录 warn，不影响主流程
+- **调度器可配置** — 新增 `SCHED_DISABLED` / `SCHED_DAILY_TIMES` / `SCHED_BACKFILL_DAYS` / `SCHED_STARTUP_DELAY_MS` 四项环境变量，多副本部署时可在非主副本设置 `SCHED_DISABLED=true` 防止重复调用 GitHub
+- **按月强制刷新接口** — 新增 `POST /api/bill/refresh`：删除该月所有 `daily_usage` 与 `monthly_bill` 记录后，按 `GITHUB_MAX_CONCURRENT` 节流并发逐日回源，重新计算 Team 月度账单。返回 `refreshedDays` 与 `failedDates` 用于观测
+- **`/billpage` 强制刷新按钮** — 账单页新增“强制刷新”按钮：二次 `confirm` 确认后调用上述接口，UI 显示刷新天数与失败日期列表，作为缓存错误、空数据写入、API 数据延迟等问题的兜底解决方案
+- **账单页改为隐式入口** — 主页不再展示“Team 月度账单”按钮，需通过手动访问 `/billpage` 进入。后端路由保持不变
+- **优雅关闭增强** — `gracefulShutdown` 流程新增 `scheduler.stop()` 调用，清理待执行的定时器，避免进程退出时仍有挂起任务
 
 ### v2.1 — 日志体系增强
 

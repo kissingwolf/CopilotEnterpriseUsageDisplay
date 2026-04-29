@@ -6,6 +6,7 @@
   /* ── DOM refs ── */
   var monthPicker = document.getElementById("monthPicker");
   var queryBtn = document.getElementById("queryBtn");
+  var forceRefreshBtn = document.getElementById("forceRefreshBtn");
   var statusBanner = document.getElementById("statusBanner");
   var meta = document.getElementById("meta");
   var errorBox = document.getElementById("error");
@@ -224,4 +225,60 @@
   monthPicker.addEventListener("keydown", function (e) {
     if (e.key === "Enter") query();
   });
+
+  /* ── Force refresh: bypass all caches and recompute the whole month. ── */
+  function forceRefresh() {
+    setError("");
+    var val = monthPicker.value;
+    if (!val) { setError("请选择月份"); return; }
+    var parts = val.split("-");
+    var year = Number(parts[0]);
+    var month = Number(parts[1]);
+
+    var ok = window.confirm(
+      "强制刷新 " + val + " 数据？\n\n" +
+      "将清除该月本地缓存并逐日回源 GitHub API，可能耗时较长（30+ 次 API 调用）。"
+    );
+    if (!ok) return;
+
+    queryBtn.disabled = true;
+    forceRefreshBtn.disabled = true;
+    forceRefreshBtn.textContent = "刷新中...";
+    C.renderSkeletonRows(tbody, 6, 5);
+    tfoot.innerHTML = "";
+    showBanner("partial", "正在强制刷新 " + val + "，请稍候...");
+
+    C.apiFetchJson(
+      "/api/bill/refresh",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ year: year, month: month }),
+      },
+      "强制刷新失败"
+    )
+      .then(function (data) {
+        lastData = data;
+        renderBill(data);
+        var extra = "已刷新 " + (data.refreshedDays || 0) + " 天";
+        if (data.failedDates && data.failedDates.length > 0) {
+          extra += "，失败 " + data.failedDates.length + " 天: " + data.failedDates.join(", ");
+        }
+        var existing = meta.textContent || "";
+        meta.textContent = existing + " | " + extra;
+      })
+      .catch(function (err) {
+        setError(err instanceof Error ? err.message : String(err));
+        tbody.innerHTML = '<tr><td colspan="6" class="empty">强制刷新失败</td></tr>';
+        tfoot.innerHTML = "";
+        showBanner(null, null);
+      })
+      .finally(function () {
+        queryBtn.disabled = false;
+        forceRefreshBtn.disabled = false;
+        forceRefreshBtn.textContent = "强制刷新";
+      });
+  }
+
+  forceRefreshBtn.addEventListener("click", forceRefresh);
 })();

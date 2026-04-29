@@ -63,6 +63,7 @@ function mapUrlToAction(url, method) {
     "GET /api/analytics/top-users": "get_top_users",
     "GET /api/analytics/daily-summary": "get_daily_summary",
     "GET /api/bill": "get_monthly_bill",
+    "POST /api/bill/refresh": "force_refresh_monthly_bill",
     "GET /api/health": "health_check",
     "GET /billpage": "view_bill_page",
     "POST /user/upload-members": "upload_mapping",
@@ -87,13 +88,14 @@ function mapUrlToAction(url, method) {
 /* ── Mount route modules ── */
 const deps = { usageStore, teamCache, userMappingService };
 
-app.use(require("./routes/usage")(deps));
+const usageRouter = require("./routes/usage")(deps);
+app.use(usageRouter);
 app.use(require("./routes/billing")(deps));
 app.use(require("./routes/teams")(deps));
 app.use(require("./routes/costcenter")());
 app.use(require("./routes/analytics")(deps));
 app.use(require("./routes/user-mapping")(deps));
-app.use(require("./routes/bill")(deps));
+app.use(require("./routes/bill")({ ...deps, usageRouter }));
 
 /* ── Health check endpoint ── */
 app.get("/api/health", (_req, res) => {
@@ -141,12 +143,17 @@ const server = app.listen(PORT, () => {
   logger.info({ port: PORT }, "Dashboard running");
 });
 
+/* ── Scheduler: daily auto-refresh of recent days (enabled by default) ── */
+const { startScheduler } = require("./lib/scheduler");
+const scheduler = startScheduler({ forceRefreshDay: usageRouter.forceRefreshDay });
+
 /* ── Graceful shutdown ── */
 function gracefulShutdown(signal) {
   logger.info({ signal }, "Received signal, shutting down gracefully...");
 
   server.close(() => {
     logger.info("HTTP server closed");
+    try { scheduler.stop(); } catch { /* noop */ }
     try { usageStore.close(); } catch { /* noop */ }
     try { userMappingService.close(); } catch { /* noop */ }
     logger.info("Resources released, exiting");

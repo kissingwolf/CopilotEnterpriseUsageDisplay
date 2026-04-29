@@ -144,20 +144,49 @@ module.exports = function createUsageRouter({ usageStore, teamCache, userMapping
     return results.length > 0 ? results : null;
   }
 
-  async function refreshForDateOverride(dateOverride) {
+  async function refreshForDateOverride(dateOverride, opts) {
+    const force = !!(opts && opts.force);
     const cacheKey = JSON.stringify(dateOverride || {});
-    const cached = refreshCache.get(cacheKey);
-    if (cached && Date.now() - cached.ts < CACHE_TTL_MS) {
-      logger.debug({ cacheKey, ageMs: Date.now() - cached.ts }, "Refresh cache hit");
-      return { result: cached.result, cacheHit: "memory" };
+    if (!force) {
+      const cached = refreshCache.get(cacheKey);
+      if (cached && Date.now() - cached.ts < CACHE_TTL_MS) {
+        logger.debug({ cacheKey, ageMs: Date.now() - cached.ts }, "Refresh cache hit");
+        return { result: cached.result, cacheHit: "memory" };
+      }
     }
     if (refreshInFlight.has(cacheKey)) return { result: (await refreshInFlight.get(cacheKey)).result, cacheHit: "shared" };
-    const promise = _refreshImpl(dateOverride, cacheKey);
+    const promise = _refreshImpl(dateOverride, cacheKey, force);
     refreshInFlight.set(cacheKey, promise);
     try { return await promise; } finally { refreshInFlight.delete(cacheKey); }
   }
 
-  async function _refreshImpl(dateOverride, cacheKey) {
+  /**
+   * Effective TTL for a SQLite-cached daily row.
+   * - Within the last 3 days (UTC): 1 hour TTL (GitHub API has 24-48h delay).
+   * - Older: USAGE_TTL_MS (90d).
+   */
+  function getEffectiveTTL(year, month, day) {
+    if (!day) return null;
+    const RECENT_TTL_MS = 60 * 60 * 1000;
+    const { USAGE_TTL_MS } = require("../lib/usage-store");
+    const now = new Date();
+    const todayUtc = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
+    const dayUtc = Date.UTC(year, month - 1, day);
+    const ageDays = Math.floor((todayUtc - dayUtc) / (24 * 60 * 60 * 1000));
+    return ageDays <= 3 ? RECENT_TTL_MS : USAGE_TTL_MS;
+  }
+
+  /**
+   * Public helper: force refresh a single date string "YYYY-MM-DD".
+   * Bypasses memory + SQLite cache, writes fresh result to SQLite.
+   */
+  async function forceRefreshDay(dateStr) {
+    const d = parseDateStr(dateStr);
+    if (!d) throw new Error("无效的日期格式: " + dateStr);
+    return refreshForDateOverride(d, { force: true });
+  }
+
+  async function _refreshImpl(dateOverride, cacheKey, force) {
     const now = new Date();
     const year = dateOverride?.year || Number(requiredEnv("BILLING_YEAR")) || now.getFullYear();
     const month = dateOverride?.month || Number(requiredEnv("BILLING_MONTH")) || (now.getMonth() + 1);
@@ -166,12 +195,11 @@ module.exports = function createUsageRouter({ usageStore, teamCache, userMapping
       ? `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`
       : `${year}-${String(month).padStart(2, "0")}`;
 
-    const { USAGE_TTL_MS } = require("../lib/usage-store");
-
     /* Check SQLite cache for single day */
-    if (day) {
+    if (day && !force) {
       const cachedDay = usageStore.getDay(dateKey);
-      if (cachedDay && Date.now() - new Date(cachedDay.fetched_at).getTime() < USAGE_TTL_MS) {
+      const effectiveTTL = getEffectiveTTL(year, month, day);
+      if (cachedDay && Date.now() - new Date(cachedDay.fetched_at).getTime() < effectiveTTL) {
         logger.debug({ dateKey, source: "sqlite" }, "SQLite cache hit");
         let ranking = cachedDay.ranking || aggregateRanking(cachedDay.data);
         let mode = cachedDay.mode;
@@ -195,7 +223,7 @@ module.exports = function createUsageRouter({ usageStore, teamCache, userMapping
     }
 
     /* Cycle query (no day): try SQLite first */
-    if (!day) {
+    if (!day && !force) {
       const sqliteRanking = buildCycleFromSQLite(year, month);
       if (sqliteRanking) {
         const result = { ranking: sqliteRanking, mode: "sqlite-cycle", rawItemsCount: 0, source: buildEndpoint().scope };
@@ -271,7 +299,8 @@ module.exports = function createUsageRouter({ usageStore, teamCache, userMapping
       const { ensureSeatsData } = require("./seats");
       await ensureSeatsData(teamCache, usageStore);
 
-      const { queryMode, date, startDate, endDate } = req.body || {};
+      const { queryMode, date, startDate, endDate, force } = req.body || {};
+      const forceRefresh = force === true || force === "true" || force === 1 || force === "1";
       let ranking, mode, rawItemsCount, source, dateLabel;
       let cacheHits = 0, totalDaysQueried = 0;
       const { MAX_CONCURRENT_GITHUB } = require("../lib/github-api");
@@ -284,7 +313,7 @@ module.exports = function createUsageRouter({ usageStore, teamCache, userMapping
         let totalRaw = 0, lastMode = "direct", lastSource = "";
         for (let i = 0; i < days.length; i += MAX_CONCURRENT_GITHUB) {
           const chunk = days.slice(i, i + MAX_CONCURRENT_GITHUB);
-          const chunkResults = await Promise.all(chunk.map((d) => refreshForDateOverride(d)));
+          const chunkResults = await Promise.all(chunk.map((d) => refreshForDateOverride(d, { force: forceRefresh })));
           for (const { result, cacheHit } of chunkResults) {
             allRankings.push(result.ranking);
             totalRaw += result.rawItemsCount;
@@ -300,8 +329,8 @@ module.exports = function createUsageRouter({ usageStore, teamCache, userMapping
         const d = parseDateStr(date);
         if (!d) throw new Error("无效的日期格式，请使用 YYYY-MM-DD");
         const [dailyResp, cycleResp] = await Promise.all([
-          refreshForDateOverride(d),
-          refreshForDateOverride({ year: d.year, month: d.month }),
+          refreshForDateOverride(d, { force: forceRefresh }),
+          refreshForDateOverride({ year: d.year, month: d.month }, { force: forceRefresh }),
         ]);
         totalDaysQueried = 2;
         if (dailyResp.cacheHit !== "github") cacheHits += 1;
@@ -312,7 +341,7 @@ module.exports = function createUsageRouter({ usageStore, teamCache, userMapping
         mode = dailyResp.result.mode; rawItemsCount = dailyResp.result.rawItemsCount;
         source = dailyResp.result.source; dateLabel = date;
       } else {
-        const resp = await refreshForDateOverride({});
+        const resp = await refreshForDateOverride({}, { force: forceRefresh });
         totalDaysQueried = 1;
         if (resp.cacheHit !== "github") cacheHits = 1;
         ranking = resp.result.ranking; mode = resp.result.mode;
@@ -341,6 +370,10 @@ module.exports = function createUsageRouter({ usageStore, teamCache, userMapping
       writeError(res, error);
     }
   });
+
+  /* Expose internal helpers for scheduler / other routes to reuse. */
+  router.forceRefreshDay = forceRefreshDay;
+  router.refreshForDateOverride = refreshForDateOverride;
 
   return router;
 };
