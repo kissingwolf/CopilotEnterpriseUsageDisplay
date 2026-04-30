@@ -65,8 +65,8 @@ module.exports = function createBillingRouter({ usageStore, teamCache }) {
     try {
       const endpoint = buildEndpoint();
       const nowM = new Date();
-      const year = req.query.year || requiredEnv("BILLING_YEAR") || String(nowM.getFullYear());
-      const month = req.query.month || requiredEnv("BILLING_MONTH") || String(nowM.getMonth() + 1);
+      const year = req.query.year || requiredEnv("BILLING_YEAR") || String(nowM.getUTCFullYear());
+      const month = req.query.month || requiredEnv("BILLING_MONTH") || String(nowM.getUTCMonth() + 1);
       const params = new URLSearchParams();
       if (year) params.set("year", String(year));
       if (month) params.set("month", String(month));

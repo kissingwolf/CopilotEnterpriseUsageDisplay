@@ -46,7 +46,7 @@
   function todayStr() { return new Date().toISOString().slice(0, 10); }
   function monthStartStr() {
     var d = new Date();
-    return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-01";
+    return d.getUTCFullYear() + "-" + String(d.getUTCMonth() + 1).padStart(2, "0") + "-01";
   }
 
   function setError(msg) { C.setError(errorBox, msg); }
@@ -503,7 +503,7 @@
     try {
       await forceRefreshSeatsCache();
       var now = new Date();
-      var data = await C.apiFetchJson("/api/billing/models?year=" + now.getFullYear() + "&month=" + (now.getMonth() + 1), {}, "获取模型排行失败");
+      var data = await C.apiFetchJson("/api/billing/models?year=" + now.getUTCFullYear() + "&month=" + (now.getUTCMonth() + 1), {}, "获取模型排行失败");
       var models = data.models || [];
       var html = "<p>" + data.year + "\u5e74" + data.month + "\u6708\u3000\u603b\u8bf7\u6c42: <strong>" + data.totalQuantity + "</strong>\u3000\u603b\u91d1\u989d: <strong>$" + data.totalAmount.toFixed(4) + "</strong></p>";
       html += '<table><thead><tr><th>\u6a21\u578b</th><th>\u8bf7\u6c42\u91cf</th><th>\u5360\u6bd4(%)</th><th>\u5355\u4ef7</th><th>\u91d1\u989d(USD)</th></tr></thead><tbody>';

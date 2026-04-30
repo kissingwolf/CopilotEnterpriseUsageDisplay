@@ -278,8 +278,8 @@ module.exports = function createUsageRouter({ usageStore, teamCache, userMapping
 
   async function _refreshImpl(dateOverride, cacheKey, force) {
     const now = new Date();
-    const year = dateOverride?.year || Number(requiredEnv("BILLING_YEAR")) || now.getFullYear();
-    const month = dateOverride?.month || Number(requiredEnv("BILLING_MONTH")) || (now.getMonth() + 1);
+    const year = dateOverride?.year || Number(requiredEnv("BILLING_YEAR")) || now.getUTCFullYear();
+    const month = dateOverride?.month || Number(requiredEnv("BILLING_MONTH")) || (now.getUTCMonth() + 1);
     const day = dateOverride?.day;
     const dateKey = day
       ? `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`
@@ -437,8 +437,8 @@ module.exports = function createUsageRouter({ usageStore, teamCache, userMapping
         ranking = resp.result.ranking; mode = resp.result.mode;
         rawItemsCount = resp.result.rawItemsCount; source = resp.result.source;
         const nowLabel = new Date();
-        const labelYear = requiredEnv("BILLING_YEAR") || String(nowLabel.getFullYear());
-        const labelMonth = requiredEnv("BILLING_MONTH") || String(nowLabel.getMonth() + 1);
+        const labelYear = requiredEnv("BILLING_YEAR") || String(nowLabel.getUTCFullYear());
+        const labelMonth = requiredEnv("BILLING_MONTH") || String(nowLabel.getUTCMonth() + 1);
         dateLabel = `${labelYear}-${labelMonth}${requiredEnv("BILLING_DAY") ? "-" + requiredEnv("BILLING_DAY") : ""}`;
       }
 

@@ -482,6 +482,18 @@ sudo systemctl reload nginx
 
 ## 更新日志
 
+### v2.4 — 趋势图数据一致性与全项目 UTC 时区统一
+
+- **趋势图优先使用 `ranking` 聚合数据** — `routes/analytics.js` 的 `/api/analytics/trends` 路由改为优先从 SQLite 的 `ranking` 字段（`per-user-fallback` 模式下的逐用户聚合结果）累加每日请求量，不存在时 fallback 到 `data` 字段（GitHub API 原始响应）。修复了 `per-user-fallback` 模式下趋势图某天数据异常偏低的问题（此前仅 `top-users` 与 `daily-summary` 使用了 `ranking`，`trends` 未使用，导致三处数据不一致）。
+- **全项目 UTC 时区一致性修复** — 统一将后端与前端代码中的 `getFullYear()` / `getMonth()` / `getDate()`（本地时间）替换为 `getUTCFullYear()` / `getUTCMonth()` / `getUTCDate()`（UTC 时间），消除东八区等非 UTC 时区下凌晨时段因本地/UTC 跨日不一致导致的日期范围偏差、年月错配等问题。涉及文件：
+  - `routes/analytics.js`（3 处日期范围计算）
+  - `routes/usage.js`（2 处默认年月与日期标签）
+  - `routes/bill.js`（4 处账单周期、查询参数）
+  - `routes/costcenter.js`（1 处计费年月）
+  - `routes/billing.js`（1 处模型排行查询）
+  - `public/script.js`（2 处前端默认年月）
+  - `public/billpage.js`（1 处月份选择器默认值）
+
 ### v2.3 — 周期聚合数据完整性校验与 UTC 时区修复
 
 - **`buildCycleFromSQLite` 三重完整性校验** — 为"本周期请求量"月度聚合增加数据可信度检查，任一检查不通过即降级到 GitHub API 月度查询兜底，避免本地缓存不完整导致"当日请求量 > 本周期请求量"的显示矛盾：

@@ -13,18 +13,26 @@ module.exports = function createAnalyticsRouter({ usageStore, userMappingService
       if (![30, 90, 365].includes(range)) return res.status(400).json({ ok: false, message: "range must be 30, 90, or 365" });
       const endDate = new Date();
       const startDate = new Date(endDate);
-      startDate.setDate(startDate.getDate() - range + 1);
+      startDate.setUTCDate(startDate.getUTCDate() - range + 1);
       const startStr = startDate.toISOString().slice(0, 10);
       const endStr = endDate.toISOString().slice(0, 10);
 
       const days = usageStore.getDaysInRange(startStr, endStr);
       const trend = days.map(function (d) {
-        const payload = typeof d.data === "string" ? JSON.parse(d.data) : d.data;
-        const usageItems = Array.isArray(payload?.usageItems) ? payload.usageItems : [];
         let requests = 0, amount = 0;
-        for (const item of usageItems) {
-          requests += toNumber(item.netQuantity) || toNumber(item.grossQuantity) || toNumber(item.quantity) || toNumber(item.requests);
-          amount += toNumber(item.netAmount) || toNumber(item.grossAmount) || toNumber(item.amount);
+        if (d.ranking) {
+          const ranking = typeof d.ranking === "string" ? JSON.parse(d.ranking) : d.ranking;
+          for (const row of ranking) {
+            requests += row.requests;
+            amount += row.amount;
+          }
+        } else {
+          const payload = typeof d.data === "string" ? JSON.parse(d.data) : d.data;
+          const usageItems = Array.isArray(payload?.usageItems) ? payload.usageItems : [];
+          for (const item of usageItems) {
+            requests += toNumber(item.netQuantity) || toNumber(item.grossQuantity) || toNumber(item.quantity) || toNumber(item.requests);
+            amount += toNumber(item.netAmount) || toNumber(item.grossAmount) || toNumber(item.amount);
+          }
         }
         return { date: d.date, requests: Math.round(requests * 100) / 100, amount: Math.round(amount * 10000) / 10000 };
       });
@@ -38,7 +46,7 @@ module.exports = function createAnalyticsRouter({ usageStore, userMappingService
       const range = Number(req.query.range) || 30;
       const endDate = new Date();
       const startDate = new Date(endDate);
-      startDate.setDate(startDate.getDate() - range + 1);
+      startDate.setUTCDate(startDate.getUTCDate() - range + 1);
       const days = usageStore.getDaysInRange(startDate.toISOString().slice(0, 10), endDate.toISOString().slice(0, 10));
       const byUser = new Map();
       for (const d of days) {
@@ -87,7 +95,7 @@ module.exports = function createAnalyticsRouter({ usageStore, userMappingService
       const range = Number(req.query.range) || 30;
       const endDate = new Date();
       const startDate = new Date(endDate);
-      startDate.setDate(startDate.getDate() - range + 1);
+      startDate.setUTCDate(startDate.getUTCDate() - range + 1);
       const days = usageStore.getDaysInRange(startDate.toISOString().slice(0, 10), endDate.toISOString().slice(0, 10));
       let totalRequests = 0, totalAmount = 0, daysWithData = 0;
       for (const d of days) {

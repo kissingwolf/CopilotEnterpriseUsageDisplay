@@ -19,8 +19,8 @@
 
   /* ── Init month picker to current month ── */
   var now = new Date();
-  var curYear = now.getFullYear();
-  var curMonth = now.getMonth() + 1;
+  var curYear = now.getUTCFullYear();
+  var curMonth = now.getUTCMonth() + 1;
   monthPicker.value = curYear + "-" + String(curMonth).padStart(2, "0");
 
   /* ── State ── */

@@ -28,9 +28,9 @@ module.exports = function createBillRouter({ usageStore, teamCache, userMappingS
    */
   function resolveBillPeriod(year, month) {
     const now = new Date();
-    const todayY = now.getFullYear();
-    const todayM = now.getMonth() + 1;
-    const todayD = now.getDate();
+    const todayY = now.getUTCFullYear();
+    const todayM = now.getUTCMonth() + 1;
+    const todayD = now.getUTCDate();
     const isCurrent = year === todayY && month === todayM;
     const lastDay = lastDayOfMonth(year, month);
 
@@ -46,8 +46,8 @@ module.exports = function createBillRouter({ usageStore, teamCache, userMappingS
     if (isCurrent) {
       // yesterday
       const yest = new Date(now);
-      yest.setDate(yest.getDate() - 1);
-      const endDay = yest.getDate();
+      yest.setUTCDate(yest.getUTCDate() - 1);
+      const endDay = yest.getUTCDate();
       return {
         status: "partial",
         message: "当前账单周期未结束，显示截至昨日数据",
@@ -237,8 +237,8 @@ module.exports = function createBillRouter({ usageStore, teamCache, userMappingS
   router.get("/api/bill", async (req, res) => {
     try {
       const now = new Date();
-      const year = Number(req.query.year) || now.getFullYear();
-      const month = Number(req.query.month) || (now.getMonth() + 1);
+      const year = Number(req.query.year) || now.getUTCFullYear();
+      const month = Number(req.query.month) || (now.getUTCMonth() + 1);
 
       if (month < 1 || month > 12) throw new Error("无效的月份");
       if (year < 2020 || year > 2100) throw new Error("无效的年份");
@@ -321,8 +321,8 @@ module.exports = function createBillRouter({ usageStore, teamCache, userMappingS
   router.post("/api/bill/refresh", async (req, res) => {
     try {
       const now = new Date();
-      const year = Number(req.body?.year) || now.getFullYear();
-      const month = Number(req.body?.month) || (now.getMonth() + 1);
+      const year = Number(req.body?.year) || now.getUTCFullYear();
+      const month = Number(req.body?.month) || (now.getUTCMonth() + 1);
       if (month < 1 || month > 12) throw new Error("无效的月份");
       if (year < 2020 || year > 2100) throw new Error("无效的年份");
 

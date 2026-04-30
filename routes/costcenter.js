@@ -10,8 +10,8 @@ const { requiredEnv } = require("../lib/billing-config");
 function getBillingYearMonthForCostCenter() {
   const now = new Date();
   return {
-    year: requiredEnv("BILLING_YEAR") || String(now.getFullYear()),
-    month: requiredEnv("BILLING_MONTH") || String(now.getMonth() + 1),
+    year: requiredEnv("BILLING_YEAR") || String(now.getUTCFullYear()),
+    month: requiredEnv("BILLING_MONTH") || String(now.getUTCMonth() + 1),
   };
 }
 
