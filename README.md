@@ -482,6 +482,14 @@ sudo systemctl reload nginx
 
 ## 更新日志
 
+### v2.3 — 周期聚合数据完整性校验与 UTC 时区修复
+
+- **`buildCycleFromSQLite` 三重完整性校验** — 为"本周期请求量"月度聚合增加数据可信度检查，任一检查不通过即降级到 GitHub API 月度查询兜底，避免本地缓存不完整导致"当日请求量 > 本周期请求量"的显示矛盾：
+  1. **覆盖完整性**：查询范围内每一天在 SQLite 中均存在记录；
+  2. **近端新鲜度**：最近 3 天的数据必须在 1 小时内刷新，且模式必须为 `per-user-fallback`（排除后台聚合尚未完成的中间态）；
+  3. **Ranking 非空**：某天存在原始用量记录但 ranking 为空时视为聚合异常，拒绝使用该周期缓存。
+- **修复月末天数 UTC 时区 bug** — 原 `new Date(year, month, 0).getUTCDate()` 在本地时区非 UTC 环境（如 CST/UTC+8）下会因跨日偏移导致月末天数少算一天（例如 4 月算成 29 天而非 30 天），进而漏掉最后一天数据。改为 `new Date(Date.UTC(year, month, 0)).getUTCDate()`，确保无论服务部署在哪个时区，月末天数计算始终正确。
+
 ### v2.2 — 数据新鲜度与刷新可靠性
 
 - **`force=true` 强制回源参数** — `POST /api/usage/refresh` 新增 `force` 布尔参数，置 true 时同时跳过内存层 `refreshCache` 与 SQLite TTL 检查，直接调用 GitHub API 并覆盖写入；single-flight 去重仍生效，不会因并发触发重复调用

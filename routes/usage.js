@@ -117,16 +117,105 @@ module.exports = function createUsageRouter({ usageStore, teamCache, userMapping
     }));
   }
 
+  /**
+   * Build cycle (monthly) ranking by aggregating SQLite-cached daily rows.
+   *
+   * Returns null (so caller falls back to GitHub API) when the local cache is
+   * NOT trustworthy enough to represent the full cycle. Three integrity checks:
+   *   1. Coverage: every expected day (1..endDay) must exist in SQLite.
+   *      - endDay = today (for current month) or last day of that month.
+   *   2. Recency: the most recent 3 days must have been fetched within
+   *      RECENT_TTL_MS (1h) — GitHub has 24~48h delay, fresh near-end data is
+   *      critical to avoid "daily > cycle" paradox.
+   *   3. Non-empty ranking: every day's ranking must be a non-empty array.
+   *      A placeholder row with empty ranking means that day's aggregation
+   *      failed and cycle totals would under-count.
+   */
   function buildCycleFromSQLite(year, month) {
-    const endDay = new Date(year, month, 0).getUTCDate();
-    const startStr = `${year}-${String(month).padStart(2, "0")}-01`;
-    const endStr = `${year}-${String(month).padStart(2, "0")}-${String(endDay).padStart(2, "0")}`;
+    const RECENT_TTL_MS = 60 * 60 * 1000;
+    const RECENT_WINDOW_DAYS = 3;
+
+    const now = new Date();
+    const isCurrentMonth =
+      now.getUTCFullYear() === year && now.getUTCMonth() + 1 === month;
+    // Use UTC day-0-of-next-month to get the real last day in UTC, avoiding
+    // local-TZ skew (e.g. `new Date(2026, 4, 0)` in CST yields 2026-04-30 00:00
+    // local = 2026-04-29 16:00 UTC → getUTCDate() == 29, off-by-one).
+    const lastDayOfMonth = new Date(Date.UTC(year, month, 0)).getUTCDate();
+    const endDay = isCurrentMonth
+      ? Math.min(now.getUTCDate(), lastDayOfMonth)
+      : lastDayOfMonth;
+    const expectedDays = endDay; // days 1..endDay
+
+    const pad = (n) => String(n).padStart(2, "0");
+    const startStr = `${year}-${pad(month)}-01`;
+    const endStr = `${year}-${pad(month)}-${pad(endDay)}`;
     const rows = usageStore.getDaysInRange(startStr, endStr);
-    if (rows.length === 0) return null;
+
+    /* Integrity check 1: coverage */
+    if (rows.length < expectedDays) {
+      logger.info(
+        { year, month, haveDays: rows.length, expectedDays },
+        "SQLite cycle incomplete (missing days), falling back to GitHub API"
+      );
+      return null;
+    }
+
+    const rowByDate = new Map(rows.map((r) => [r.date, r]));
+
+    /* Integrity check 2: recency + mode trustworthiness on the last RECENT_WINDOW_DAYS days
+     * - must exist in SQLite
+     * - fetched_at within RECENT_TTL_MS (1h)
+     * - mode must be "per-user-fallback" when raw_count > 0. A direct-mode row
+     *   near the end of cycle is usually a mid-state (per-user-fallback still
+     *   running in background) and its ranking under-counts known users. Using
+     *   it to build the cycle total leads to "daily > cycle" paradox. */
+    const freshCutoff = Date.now() - RECENT_TTL_MS;
+    for (let i = 0; i < RECENT_WINDOW_DAYS; i += 1) {
+      const d = endDay - i;
+      if (d < 1) break;
+      const key = `${year}-${pad(month)}-${pad(d)}`;
+      const row = rowByDate.get(key);
+      if (!row) {
+        logger.info({ missingDate: key }, "SQLite cycle: recent day missing");
+        return null;
+      }
+      const fetchedAtMs = new Date(row.fetched_at).getTime();
+      if (!Number.isFinite(fetchedAtMs) || fetchedAtMs < freshCutoff) {
+        logger.info(
+          { date: key, fetched_at: row.fetched_at },
+          "SQLite cycle: recent day stale, falling back to GitHub API"
+        );
+        return null;
+      }
+      const rawCount = typeof row.raw_count === "number" ? row.raw_count : 0;
+      if (rawCount > 0 && row.mode !== "per-user-fallback") {
+        logger.info(
+          { date: key, mode: row.mode, rawCount },
+          "SQLite cycle: recent day not per-user-fallback (likely mid-state), falling back"
+        );
+        return null;
+      }
+    }
+
+    /* Integrity check 3: non-empty ranking + aggregate
+     * A day with zero raw_count AND empty ranking is a legitimate "no usage"
+     * day; we only reject when ranking is empty but raw items exist (i.e.
+     * aggregation silently lost users). */
     const byUser = new Map();
     for (const row of rows) {
       const ranking = row.ranking ? JSON.parse(row.ranking) : null;
-      if (!ranking || ranking.length === 0) continue;
+      if (!ranking || ranking.length === 0) {
+        const rawCount = typeof row.raw_count === "number" ? row.raw_count : 0;
+        if (rawCount > 0) {
+          logger.info(
+            { date: row.date, rawCount },
+            "SQLite cycle: day has raw items but empty ranking, falling back"
+          );
+          return null;
+        }
+        continue;
+      }
       for (const entry of ranking) {
         const cur = byUser.get(entry.user) || { user: entry.user, requests: 0, amount: 0 };
         cur.requests += entry.requests;
@@ -134,6 +223,7 @@ module.exports = function createUsageRouter({ usageStore, teamCache, userMapping
         byUser.set(cur.user, cur);
       }
     }
+
     const results = Array.from(byUser.values())
       .sort((a, b) => b.requests - a.requests)
       .map((row, idx) => ({
