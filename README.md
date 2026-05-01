@@ -15,8 +15,8 @@
 - **防止限流与并发控制** — 内置 GitHub API 调用并发队列和请求防抖 (Single-flight)；遇到 API 速率限制 (Rate Limit) 时会自动进行指数退避重试，向前端返回友好的恢复时间提示。
 - **分批渲染大表** — 处理海量用量数据时采用 requestAnimationFrame 进行 chunked 渲染，避免卡死浏览器主线程。
 - **排序** — 全部表格列支持升序/降序点击排序
-- **用户 & Team 信息** — 查看 Enterprise Teams（名称、描述、成员数），点击展开查看 Team 成员
-- **整体账单汇总** — 席位订阅费 + Premium Requests 超额计算 + 费用合计
+- **用户 & Team 信息** — 查看 Enterprise Teams（名称、描述、成员数），点击展开查看 Team 成员（AD 名称优先，GitHub 登录名回退）；查看全量 Copilot 席位列表（AD 名映射显示）
+- **整体账单汇总** — 席位订阅费 + Premium Requests 超额费用（API 净额口径），支持历史月切換和强制刷新回源
 - **模型使用排行** — 按月查看各 AI 模型的请求量和费用占比
 - **启动前自检** — 提供 Shell 与 Node 两版 preflight 脚本用于权限和连通性检查
 - **Cost Center 详情增强** — 点击名称可查看常规信息卡片、资源分组明细（Users/Organizations/Repositories）
@@ -490,6 +490,15 @@ sudo systemctl reload nginx
   3. **读取链路**：`getBill` 返回结果映射新增 `adName: row.ad_name || null`，恢复前端 `u.adName || u.login` 的映射优先显示逻辑。
 - **读时兜底映射（读时永久自愈）** — `routes/bill.js` 在走 `getBill` 历史缓存路径时，对 `adName` 为空的行（迁移前写入的遗留数据）调用 `userMappingService.getUserByGithub(login)` 实时补齐。老历史月无需手动“强制刷新”也能立刻显示最新 AD 映射；下一次该月被重算（或强制刷新）时，真实 `ad_name` 会随 `saveBill` 落库替代兜底值。
 - **路由依赖注入对齐** — `server.js` 将 `routes/costcenter.js` 的挂载调用由 `require(...)()` 改为 `require(...)(deps)`，与 `billing` / `teams` / `analytics` / `user-mapping` / `bill` / `usage` 等其他路由保持一致；`createCostCenterRouter` 函数签名同步接受一个 `_deps` 形参（当前路由未使用，仅为对齐），避免未来引入映射服务时再踩 `undefined` DI 隐患。
+
+### v2.6 — 响应层 AD 名称全覆盖 + 整体账单汇总增强
+
+- **账单超额费用改用 API 净额** — `routes/billing.js` 的 `/api/billing/summary` 中 `overageCost` 优先取 `premiumItem.netAmount`（与 GitHub 企业账单 API 口径一致，`grossAmount − discountAmount`），仅当 API 未返回 `netAmount` 时才 fallback 到本地公式（`overageRequests × unitPrice`）。响应新增 `netPremiumCost` / `localOverageCost` / `overageCostSource` 字段用于审计区分数据来源。
+- **账单汇总支持历史月查询** — `/api/billing/summary` 新增 `?year=&month=` 查询参数；前端弹窗新增月份选择器（当月 + 过去 11 个月），按月切换无需刷新页面。
+- **账单强制刷新** — 前端"整体账单汇总"弹窗新增"强制刷新"按钮，点击后传 `force=1`。后端在 `force` 模式下执行 `invalidateCacheByPrefix("/settings/billing/usage")` 清空该路径的 LRU 缓存，再回源 GitHub 拉取最新数据，跳过 3 分钟默认 TTL。
+- **席位 API 响应层 adName 注入** — `routes/billing.js` 的 `/api/seats` 返回前对 `teamCache.seatsRaw` 做 `enrichSeatsWithAdName` 映射注入 `adName` 字段（不 mutate 缓存原数据、不动 `seats_snapshot` 表）。前端"用户席位"表第一列改为显示 `adName || login`，原始 `login` 保留为 tooltip。
+- **Team 成员 adName 注入** — `routes/teams.js` 的 `/api/enterprise-teams/:teamId/members` 在 push 成员时通过 `userMappingService.getUserByGithub` 解析 `adName` 并纳入响应。前端 Teams 展开成员列表改为显示 `adName || login`，tooltip 保留原始 `login`。
+- **Cost Center 用户资源 adName 注入** — `routes/costcenter.js` 新增 `enrichResourcesWithAdName` 函数，仅对 `type=user` 的资源注入 `adName` 字段，列表和详情接口统一走同一逻辑。前端 Resources 分组的 Users 标签改为优先显示 `adName`（回退 `name`），tooltip 保留原始 `name`。
 
 ### v2.4 — 趋势图数据一致性与全项目 UTC 时区统一
 
