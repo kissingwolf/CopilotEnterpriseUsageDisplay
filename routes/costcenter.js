@@ -107,7 +107,9 @@ async function fetchEnterpriseTeamMembers(enterprise, teamId) {
   return members;
 }
 
-module.exports = function createCostCenterRouter() {
+module.exports = function createCostCenterRouter(_deps) {
+  // Accept deps (usageStore, teamCache, userMappingService) for DI symmetry,
+  // even though this router does not currently consume them.
   const router = express.Router();
 
   router.get("/api/cost-centers", async (req, res) => {

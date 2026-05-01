@@ -482,6 +482,15 @@ sudo systemctl reload nginx
 
 ## 更新日志
 
+### v2.5 — Team 月度账单用户名映射持久化
+
+- **`monthly_bill` 表新增 `ad_name` 列** — 历史月份账单走 SQLite 缓存路径（`getBill`）时会丢失 `adName` 字段，导致 Team 月度账单详情里“已映射”用户退化为显示 GitHub 登录名。UTC 化后当前月在 UTC 凌晨跨日即被判定为已完结，该问题大量暴露。修复以结构化持久化为准：
+  1. **Schema 迁移**：`lib/usage-store.js` 的 `_initSchema` 在 `CREATE TABLE monthly_bill` 中增加 `ad_name TEXT`；对既有数据库执行幂等 `ALTER TABLE monthly_bill ADD COLUMN ad_name TEXT`，启动即自动升级，无需人工迁移。
+  2. **写入链路**：`saveBillRow` INSERT 字段由 11 个扩展到 12 个，`saveBill` 循环将 `r.adName` 传入占位符。`computeBill` 路径生成的 `adName` 自此随 bill 行一起落库。
+  3. **读取链路**：`getBill` 返回结果映射新增 `adName: row.ad_name || null`，恢复前端 `u.adName || u.login` 的映射优先显示逻辑。
+- **读时兜底映射（读时永久自愈）** — `routes/bill.js` 在走 `getBill` 历史缓存路径时，对 `adName` 为空的行（迁移前写入的遗留数据）调用 `userMappingService.getUserByGithub(login)` 实时补齐。老历史月无需手动“强制刷新”也能立刻显示最新 AD 映射；下一次该月被重算（或强制刷新）时，真实 `ad_name` 会随 `saveBill` 落库替代兜底值。
+- **路由依赖注入对齐** — `server.js` 将 `routes/costcenter.js` 的挂载调用由 `require(...)()` 改为 `require(...)(deps)`，与 `billing` / `teams` / `analytics` / `user-mapping` / `bill` / `usage` 等其他路由保持一致；`createCostCenterRouter` 函数签名同步接受一个 `_deps` 形参（当前路由未使用，仅为对齐），避免未来引入映射服务时再踩 `undefined` DI 隐患。
+
 ### v2.4 — 趋势图数据一致性与全项目 UTC 时区统一
 
 - **趋势图优先使用 `ranking` 聚合数据** — `routes/analytics.js` 的 `/api/analytics/trends` 路由改为优先从 SQLite 的 `ranking` 字段（`per-user-fallback` 模式下的逐用户聚合结果）累加每日请求量，不存在时 fallback 到 `data` 字段（GitHub API 原始响应）。修复了 `per-user-fallback` 模式下趋势图某天数据异常偏低的问题（此前仅 `top-users` 与 `daily-summary` 使用了 `ranking`，`trends` 未使用，导致三处数据不一致）。

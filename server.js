@@ -92,7 +92,7 @@ const usageRouter = require("./routes/usage")(deps);
 app.use(usageRouter);
 app.use(require("./routes/billing")(deps));
 app.use(require("./routes/teams")(deps));
-app.use(require("./routes/costcenter")());
+app.use(require("./routes/costcenter")(deps));
 app.use(require("./routes/analytics")(deps));
 app.use(require("./routes/user-mapping")(deps));
 app.use(require("./routes/bill")({ ...deps, usageRouter }));

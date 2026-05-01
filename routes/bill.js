@@ -267,6 +267,15 @@ module.exports = function createBillRouter({ usageStore, teamCache, userMappingS
       if (cached && period.status === "complete") {
         // Historical month with cached data — use directly
         billRows = usageStore.getBill(ym);
+        // Self-heal adName for legacy rows written before the ad_name column
+        // migration (schema v2.5). Falls back to current user mapping so the
+        // user sees AD names without needing a force-refresh.
+        for (const row of billRows) {
+          if (!row.adName) {
+            const mapped = userMappingService.getUserByGithub(row.login);
+            if (mapped) row.adName = mapped.adName;
+          }
+        }
         // Guard: detect stale "empty-month" cache written before the no-usage
         // fix (all rows had seat cost but zero requests). Recompute in that
         // case so the cleanup path runs.
