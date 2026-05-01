@@ -440,7 +440,10 @@
               if (members.length === 0) { membersDiv.innerHTML = '<div style="color:var(--muted);padding:8px 0">\u65e0\u6210\u5458</div>'; }
               else {
                 var mHtml = '<div class="member-grid">';
-                members.forEach(function (m) { mHtml += '<div class="member-item"><img src="' + C.escapeHtml(m.avatarUrl) + '&s=32" width="24" height="24" style="border-radius:50%;vertical-align:middle" /> <span>' + C.escapeHtml(m.login) + '</span></div>'; });
+                members.forEach(function (m) {
+                  var display = m.adName || m.login;
+                  mHtml += '<div class="member-item"><img src="' + C.escapeHtml(m.avatarUrl) + '&s=32" width="24" height="24" style="border-radius:50%;vertical-align:middle" /> <span title="' + C.escapeHtml(m.login) + '">' + C.escapeHtml(display) + '</span></div>';
+                });
                 mHtml += '</div>';
                 membersDiv.innerHTML = '<div style="padding:4px 0;color:var(--muted);font-size:13px">' + members.length + ' \u4e2a\u6210\u5458</div>' + mHtml;
               }
@@ -455,7 +458,15 @@
       infoLine.innerHTML = "\u603b\u5e2d\u4f4d: <strong>" + seatsData.totalSeats + "</strong>\u3000\u66f4\u65b0\u65f6\u95f4: " + C.formatTs(seatsData.fetchedAt);
       usersPane.appendChild(infoLine);
       var seatRows = seats.map(function (s) {
-        return { login: s.login, team: s.team, planType: s.planType, lastActivityAt: s.lastActivityAt || "", "__html_lastActivityAt": C.formatTs(s.lastActivityAt), lastActivityEditor: s.lastActivityEditor || "-" };
+        var display = s.adName || s.login;
+        return {
+          login: display,
+          "__html_login": '<span title="' + C.escapeHtml(s.login) + '">' + C.escapeHtml(display) + '</span>',
+          team: s.team, planType: s.planType,
+          lastActivityAt: s.lastActivityAt || "",
+          "__html_lastActivityAt": C.formatTs(s.lastActivityAt),
+          lastActivityEditor: s.lastActivityEditor || "-"
+        };
       });
       usersPane.appendChild(modalSortableTable(
         [{ key: "login", label: "\u7528\u6237" }, { key: "team", label: "Team" }, { key: "planType", label: "\u8ba1\u5212" }, { key: "lastActivityAt", label: "\u6700\u540e\u6d3b\u8dc3" }, { key: "lastActivityEditor", label: "\u7f16\u8f91\u5668" }],

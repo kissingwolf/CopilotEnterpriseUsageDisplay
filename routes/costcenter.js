@@ -107,9 +107,19 @@ async function fetchEnterpriseTeamMembers(enterprise, teamId) {
   return members;
 }
 
-module.exports = function createCostCenterRouter(_deps) {
-  // Accept deps (usageStore, teamCache, userMappingService) for DI symmetry,
-  // even though this router does not currently consume them.
+module.exports = function createCostCenterRouter({ userMappingService } = {}) {
+  // Non-destructive adName enrichment for user-type resources.
+  const enrichResourcesWithAdName = (resources) => {
+    if (!Array.isArray(resources)) return [];
+    if (!userMappingService) return resources;
+    return resources.map((r) => {
+      if (String(r?.type || "").toLowerCase() !== "user") return r;
+      try {
+        const mapped = userMappingService.getUserByGithub(r?.name || "");
+        return mapped && mapped.adName ? { ...r, adName: mapped.adName } : r;
+      } catch { return r; }
+    });
+  };
   const router = express.Router();
 
   router.get("/api/cost-centers", async (req, res) => {
@@ -134,7 +144,8 @@ module.exports = function createCostCenterRouter(_deps) {
           id: cc.id || "", name: cc.name || "-", seatBaseCost,
           budgetAmount: budgetInfo ? budgetInfo.amount : null,
           spentAmount: spentByName.get(nameKey) ?? null,
-          state: cc.state || "-", azureSubscription: cc.azure_subscription || "", resources,
+          state: cc.state || "-", azureSubscription: cc.azure_subscription || "",
+          resources: enrichResourcesWithAdName(resources),
         };
       });
 
@@ -166,7 +177,7 @@ module.exports = function createCostCenterRouter(_deps) {
           budgetAmount: budgetInfo ? budgetInfo.amount : null,
           spentAmount: spentByName.get(nameKey) ?? null,
           state: found.state || "-", azureSubscription: found.azure_subscription || "",
-          resources: Array.isArray(found.resources) ? found.resources : [],
+          resources: enrichResourcesWithAdName(Array.isArray(found.resources) ? found.resources : []),
         },
       });
     } catch (error) { writeError(res, error); }

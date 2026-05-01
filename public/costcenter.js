@@ -70,7 +70,11 @@
       if (!list.length) html += '<div class="cc-empty">无 ' + section.title + '</div>';
       else {
         html += '<div class="cc-resource-list">';
-        list.forEach(function (r) { html += '<span class="cc-tag">' + C.escapeHtml(r.name || "-") + '</span>'; });
+        list.forEach(function (r) {
+          var name = r.name || "-";
+          var display = (section.key === "user" && r.adName) ? r.adName : name;
+          html += '<span class="cc-tag" title="' + C.escapeHtml(name) + '">' + C.escapeHtml(display) + '</span>';
+        });
         html += '</div>';
       }
       html += '</div>';

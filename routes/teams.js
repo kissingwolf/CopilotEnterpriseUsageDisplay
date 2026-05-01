@@ -33,7 +33,15 @@ async function getTeamMemberCountCached(enterprise, teamId) {
   } catch { return null; }
 }
 
-module.exports = function createTeamsRouter({ teamCache }) {
+module.exports = function createTeamsRouter({ teamCache, userMappingService }) {
+  const resolveAdName = (login) => {
+    if (!userMappingService || !login) return "";
+    try {
+      const mapped = userMappingService.getUserByGithub(login);
+      return mapped && mapped.adName ? mapped.adName : "";
+    } catch { return ""; }
+  };
+
   const router = express.Router();
 
   router.get("/api/teams", (_req, res) => {
@@ -75,7 +83,10 @@ module.exports = function createTeamsRouter({ teamCache }) {
           new URLSearchParams({ per_page: "100", page: String(page) })
         );
         const batch = Array.isArray(raw) ? raw : [];
-        for (const m of batch) allMembers.push({ login: m.login || "", avatarUrl: m.avatar_url || "", htmlUrl: m.html_url || "" });
+        for (const m of batch) {
+          const login = m.login || "";
+          allMembers.push({ login, adName: resolveAdName(login), avatarUrl: m.avatar_url || "", htmlUrl: m.html_url || "" });
+        }
         if (batch.length < 100) break;
         page += 1;
       }

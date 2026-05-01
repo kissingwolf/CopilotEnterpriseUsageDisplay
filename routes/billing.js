@@ -7,15 +7,28 @@ const { githubGetJson, invalidateCacheByPrefix } = require("../lib/github-api");
 const { toNumber, writeError, buildEndpoint } = require("../lib/helpers");
 const { ensureSeatsData, fetchCopilotSeats } = require("./seats");
 
-module.exports = function createBillingRouter({ usageStore, teamCache }) {
+module.exports = function createBillingRouter({ usageStore, teamCache, userMappingService }) {
   const router = express.Router();
+
+  // Non-destructive adName enrichment: never mutates teamCache.seatsRaw.
+  const enrichSeatsWithAdName = (seats) => {
+    if (!Array.isArray(seats)) return [];
+    if (!userMappingService) return seats;
+    return seats.map((s) => {
+      try {
+        const mapped = userMappingService.getUserByGithub(s.login || "");
+        return mapped && mapped.adName ? { ...s, adName: mapped.adName } : { ...s, adName: "" };
+      } catch { return { ...s, adName: "" }; }
+    });
+  };
 
   router.get("/api/seats", async (req, res) => {
     try {
       const shouldRefresh = String(req.query.refresh || "").toLowerCase();
       const forceRefresh = shouldRefresh === "1" || shouldRefresh === "true";
       await ensureSeatsData(teamCache, usageStore, forceRefresh);
-      res.json({ ok: true, fetchedAt: teamCache.fetchedAt, totalSeats: teamCache.seatsRaw.length, seats: teamCache.seatsRaw });
+      const seats = enrichSeatsWithAdName(teamCache.seatsRaw);
+      res.json({ ok: true, fetchedAt: teamCache.fetchedAt, totalSeats: seats.length, seats });
     } catch (error) { writeError(res, error); }
   });
 
