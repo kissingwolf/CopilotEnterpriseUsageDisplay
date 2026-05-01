@@ -4,3 +4,5 @@ uploads/
 data/
 .claude/
 .vscode/
+.qoder/
+server.log
