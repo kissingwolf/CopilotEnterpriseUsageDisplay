@@ -36,8 +36,7 @@
 - **ETag 条件请求** — 数据未变化时返回 304 Not Modified，不消耗 API 配额
 - **数据分析页面** — 独立页面提供用量趋势图、Top 用户排行柱状图、汇总统计卡片（30 天 / 90 天 / 1 年）
 - **Team 月度账单** — 独立页面 `/billpage`，按月查看 Team 维度账单，显示席位费、套餐外附加费、总费用，支持展开查看用户明细，历史数据持久化到 SQLite（仅通过直接访问 URL `/billpage` 进入，主页不展示入口）
-- **按月强制刷新兑底** — `/billpage` 页面提供“强制刷新”按钮：二次确认后会清空选中月份的 SQLite 缓存、逐日回源 GitHub API并重新计算账单，作为缓存错误、空数据或 API 数据延迟场景下的兑底手段
-- **按日强制回源** — `POST /api/usage/refresh` 支持 `force:true` 参数，跳过内存与 SQLite TTL 检查，直接拉取最新数据并覆盖写入
+- **按月强制刷新兑底** — `/billpage` 页面提供“强制刷新”按钮：二次确认后会清空选中月份的 SQLite 缓存、逐日回源 GitHub API并重新计算账单，作为缓存错误、空数据或 API 数据延迟场景下的兑底手段- **账单导出 Excel** — `/billpage` 页面提供"导出Excel"按钮，将选中月份的 Team 账单导出为 `.xlsx` 文件；每个 Team 生成独立 Sheet（含用户名、Team名、用量信息、套餐外附加费、总费用），另附 "Total" 汇总 Sheet（Team 级聚合统计），使用 `exceljs` 库在服务端生成并流式返回- **按日强制回源** — `POST /api/usage/refresh` 支持 `force:true` 参数，跳过内存与 SQLite TTL 检查，直接拉取最新数据并覆盖写入
 - **动态 TTL抖动防护** — 近 3 天的日期采用 1 小时 SQLite TTL，更老的日期使用 90 天 TTL，避免因 GitHub Billing API 24–48h 延迟期写入不完整数据后被“锁死”
 - **内置自动刷新调度器**（默认开启）— 服务启动后自动刷新当天数据；每天 03:00 / 12:00 强制刷新今天 + 剩下的近 N 天（默认 N=2），避免依赖人工点击刷新。可通过环境变量关闭或调整时间
 - **缓存命中率展示** — 页面顶部显示缓存命中百分比，直观反映 API 调用节省效果
@@ -124,6 +123,7 @@ data/
 | `GET` | `/api/analytics/top-users?range=30` | Top 20 用户排名（Chart.js 柱状图） |
 | `GET` | `/api/analytics/daily-summary?range=30` | 汇总统计（总量、日均、有数据天数） |
 | `GET` | `/api/bill?year=2026&month=4` | Team 月度账单（席位费 + 超额费 + 总费用，按 Team 分组） |
+| `GET` | `/api/bill/export?year=2026&month=4` | 导出 Team 月度账单为 Excel 文件（多 Sheet：每 Team 明细 + Total 汇总） |
 
 > 详细的“强制刷新”与“自动刷新调度器”使用说明见后文《强制刷新与自动刷新》小节。
 

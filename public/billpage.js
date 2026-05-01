@@ -16,6 +16,7 @@
   var teamFilterDropdown = document.getElementById("teamFilterDropdown");
   var teamFilterAll = document.getElementById("teamFilterAll");
   var teamFilterList = document.getElementById("teamFilterList");
+  var exportBtn = document.getElementById("exportBtn");
 
   /* ── Init month picker to current month ── */
   var now = new Date();
@@ -209,6 +210,7 @@
       .then(function (data) {
         lastData = data;
         renderBill(data);
+        exportBtn.disabled = !(data.teams && data.teams.length > 0);
       })
       .catch(function (err) {
         setError(err instanceof Error ? err.message : String(err));
@@ -260,6 +262,7 @@
       .then(function (data) {
         lastData = data;
         renderBill(data);
+        exportBtn.disabled = !(data.teams && data.teams.length > 0);
         var extra = "已刷新 " + (data.refreshedDays || 0) + " 天";
         if (data.failedDates && data.failedDates.length > 0) {
           extra += "，失败 " + data.failedDates.length + " 天: " + data.failedDates.join(", ");
@@ -281,4 +284,16 @@
   }
 
   forceRefreshBtn.addEventListener("click", forceRefresh);
+
+  /* ── Export Excel ── */
+  function exportExcel() {
+    var val = monthPicker.value;
+    if (!val) { setError("请选择月份"); return; }
+    var parts = val.split("-");
+    var year = Number(parts[0]);
+    var month = Number(parts[1]);
+    window.location.href = "/api/bill/export?year=" + year + "&month=" + month;
+  }
+
+  exportBtn.addEventListener("click", exportExcel);
 })();

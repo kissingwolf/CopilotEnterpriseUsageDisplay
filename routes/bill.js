@@ -411,5 +411,134 @@ module.exports = function createBillRouter({ usageStore, teamCache, userMappingS
     }
   });
 
+  /* ── Export Excel ── */
+
+  router.get("/api/bill/export", async (req, res) => {
+    try {
+      const ExcelJS = require("exceljs");
+
+      const now = new Date();
+      const year = Number(req.query.year) || now.getUTCFullYear();
+      const month = Number(req.query.month) || (now.getUTCMonth() + 1);
+
+      if (month < 1 || month > 12) throw new Error("无效的月份");
+      if (year < 2020 || year > 2100) throw new Error("无效的年份");
+
+      const ym = yearMonthKey(year, month);
+      const period = resolveBillPeriod(year, month);
+
+      if (period.status === "aggregating") {
+        return res.status(400).json({ ok: false, error: "每月前两天为数据汇聚时间，暂不可导出" });
+      }
+
+      // Get bill data (same logic as GET /api/bill)
+      let billRows;
+      const cached = usageStore.hasBill(ym);
+
+      if (cached && period.status === "complete") {
+        billRows = usageStore.getBill(ym);
+        for (const row of billRows) {
+          if (!row.adName) {
+            const mapped = userMappingService.getUserByGithub(row.login);
+            if (mapped) row.adName = mapped.adName;
+          }
+        }
+      } else {
+        const result = await computeBill(year, month, period);
+        billRows = result.billRows;
+        if (!result.hasUsage) {
+          return res.status(400).json({ ok: false, error: "该月暂无账单数据可导出" });
+        }
+      }
+
+      if (!billRows || billRows.length === 0) {
+        return res.status(400).json({ ok: false, error: "该月暂无账单数据可导出" });
+      }
+
+      const teams = groupByTeam(billRows);
+
+      // Build Excel workbook
+      const workbook = new ExcelJS.Workbook();
+
+      // Per-team sheets
+      for (const t of teams) {
+        // Excel sheet name max 31 chars, strip invalid chars
+        const sheetName = t.team.replace(/[\\/*?:\[\]]/g, "_").slice(0, 31);
+        const sheet = workbook.addWorksheet(sheetName);
+
+        sheet.columns = [
+          { header: "用户名", key: "userName", width: 20 },
+          { header: "TEAM名", key: "teamName", width: 30 },
+          { header: "用量信息", key: "usage", width: 25 },
+          { header: "套餐外附加费(USD)", key: "extraFee", width: 20 },
+          { header: "总费用", key: "total", width: 15 },
+        ];
+
+        // Bold header row
+        sheet.getRow(1).font = { bold: true };
+
+        for (const u of t.users) {
+          const usageStr = `${u.planType} (${u.requests}/${u.quota})`;
+          const extraFeeStr = u.overageRequests > 0
+            ? `$${u.overageCost.toFixed(2)} (${u.overageRequests} reqs)`
+            : "--";
+          sheet.addRow({
+            userName: u.adName || u.login,
+            teamName: t.team,
+            usage: usageStr,
+            extraFee: extraFeeStr,
+            total: `$${u.totalCost.toFixed(2)}`,
+          });
+        }
+      }
+
+      // Total summary sheet
+      const totalSheet = workbook.addWorksheet("Total");
+      totalSheet.columns = [
+        { header: "TEAM", key: "team", width: 35 },
+        { header: "成员数", key: "members", width: 10 },
+        { header: "席位费(USD)", key: "seatCost", width: 15 },
+        { header: "套餐外附加费(USD)", key: "overageCost", width: 20 },
+        { header: "总费用(USD)", key: "totalCost", width: 15 },
+      ];
+      totalSheet.getRow(1).font = { bold: true };
+
+      let grandSeat = 0, grandOverage = 0, grandTotal = 0, grandMembers = 0;
+      for (const t of teams) {
+        totalSheet.addRow({
+          team: t.team,
+          members: t.members,
+          seatCost: `$${t.seatCost.toFixed(2)}`,
+          overageCost: `$${t.overageCost.toFixed(2)}`,
+          totalCost: `$${t.totalCost.toFixed(2)}`,
+        });
+        grandSeat += t.seatCost;
+        grandOverage += t.overageCost;
+        grandTotal += t.totalCost;
+        grandMembers += t.members;
+      }
+
+      // Grand total row
+      const grandRow = totalSheet.addRow({
+        team: "合计",
+        members: grandMembers,
+        seatCost: `$${grandSeat.toFixed(2)}`,
+        overageCost: `$${grandOverage.toFixed(2)}`,
+        totalCost: `$${grandTotal.toFixed(2)}`,
+      });
+      grandRow.font = { bold: true };
+
+      // Write to buffer and send
+      const buffer = await workbook.xlsx.writeBuffer();
+      const filename = `copilot-bill-${ym}.xlsx`;
+
+      res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+      res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+      res.send(Buffer.from(buffer));
+    } catch (error) {
+      writeError(res, error);
+    }
+  });
+
   return router;
 };
