@@ -465,36 +465,105 @@
   });
 
   /* ── Billing Summary ── */
-  btnBillingSummary.addEventListener("click", async function () {
-    openModal("\u6574\u4f53\u8d26\u5355\u6c47\u603b", '<div class="loading">\u52a0\u8f7d\u4e2d...</div>');
+  function renderBillingToolbar() {
+    var now = new Date();
+    var curY = now.getUTCFullYear();
+    var curM = now.getUTCMonth() + 1;
+    var pad = function (n) { return n < 10 ? "0" + n : String(n); };
+    var options = '<option value="current">' + curY + "-" + pad(curM) + "\uFF08\u5F53\u6708\uFF09</option>";
+    for (var i = 1; i <= 11; i++) {
+      var d = new Date(Date.UTC(curY, curM - 1 - i, 1));
+      var y = d.getUTCFullYear();
+      var m = d.getUTCMonth() + 1;
+      options += '<option value="' + y + "-" + m + '">' + y + "-" + pad(m) + "</option>";
+    }
+    return '<div class="billing-toolbar" style="display:flex;gap:0.5rem;align-items:center;flex-wrap:wrap;margin-bottom:0.75rem">' +
+      '<label style="color:var(--muted)">\u6708\u4EFD\uFF1A</label>' +
+      '<select id="billingSummaryMonth" class="month-selector">' + options + "</select>" +
+      '<button id="btnBillingForceRefresh" class="info-btn" title="\u8DF3\u8FC7 3 \u5206\u949F\u7F13\u5B58\u76F4\u63A5\u56DE\u6E90 GitHub">\u5F3A\u5236\u5237\u65B0</button>' +
+      '<span id="billingSummaryMeta" style="color:var(--muted);font-size:0.85rem;margin-left:auto"></span>' +
+      "</div>";
+  }
+
+  function renderBillingSummaryBody(data) {
+    var monthLabel = data.year + "\u5E74" + data.month + "\u6708" + (data.isCurrentMonth ? "\uFF08\u5F53\u6708\uFF09" : "");
+    var html = '<h3>\u5E2D\u4F4D\u8BA2\u9605</h3><table><thead><tr><th>\u8BA2\u9605\u8BA1\u5212</th><th>\u5E2D\u4F4D\u6570</th><th>\u5355\u4EF7(\u6708)</th><th>\u5C0F\u8BA1(USD)</th><th>\u5355\u5E2D\u4F4D\u989D\u5EA6</th><th>\u603B\u989D\u5EA6</th></tr></thead><tbody>';
+    (data.planSummary || []).forEach(function (p) {
+      html += "<tr><td>Copilot " + C.escapeHtml(p.plan) + "</td><td>" + p.seats + "</td><td>$" + p.baseCost + "</td><td>$" + p.totalCost.toFixed(2) + "</td><td>" + p.quotaPerSeat + " requests</td><td>" + p.totalQuota + " requests</td></tr>";
+    });
+    html += "</tbody></table>";
+    html += "<h3>Premium Requests \u4F7F\u7528\u60C5\u51B5\uFF08" + C.escapeHtml(monthLabel) + "\uFF09</h3><table><thead><tr><th>\u9879\u76EE</th><th>\u503C</th></tr></thead><tbody>";
+    html += "<tr><td>" + C.escapeHtml(monthLabel) + "\u603B Premium Requests</td><td>" + data.totalPremiumRequests + "</td></tr>";
+    html += "<tr><td>\u8BA2\u9605\u5305\u542B\u989D\u5EA6</td><td>" + data.totalIncludedQuota + " requests (" + data.totalSeats + " \u5E2D\u4F4D)</td></tr>";
+    var usedPct = data.totalIncludedQuota > 0 ? (data.totalPremiumRequests / data.totalIncludedQuota * 100).toFixed(1) : "0";
+    html += "<tr><td>\u989D\u5EA6\u4F7F\u7528\u7387</td><td>" + usedPct + "%</td></tr>";
+    html += "<tr><td>\u8D85\u989D\u8BF7\u6C42\u6570</td><td>" + data.overageRequests + "</td></tr>";
+    html += "<tr><td>\u8D85\u989D\u5355\u4EF7</td><td>$" + data.premiumUnitPrice + "/request</td></tr>";
+    var srcLabel = data.overageCostSource === "api-netAmount" ? "GitHub API netAmount" : "\u672C\u5730\u516C\u5F0F";
+    html += "<tr><td>\u8D85\u989D\u8D39\u7528<span style='color:var(--muted);font-size:0.8em;margin-left:0.3em'>(" + C.escapeHtml(srcLabel) + ")</span></td><td>$" + data.overageCost.toFixed(4) + "</td></tr>";
+    if (data.overageCostSource === "api-netAmount" && typeof data.localOverageCost === "number" && Math.abs(data.localOverageCost - data.overageCost) > 0.0001) {
+      html += "<tr><td style='color:var(--muted)'>\u672C\u5730\u516C\u5F0F\u53C2\u8003\u503C</td><td style='color:var(--muted)'>$" + data.localOverageCost.toFixed(4) + "</td></tr>";
+    }
+    html += "</tbody></table>";
+    html += "<h3>\u8D39\u7528\u6C47\u603B</h3><table><thead><tr><th>\u9879\u76EE</th><th>\u91D1\u989D(USD)</th></tr></thead><tbody>";
+    html += "<tr><td>\u5E2D\u4F4D\u8BA2\u9605\u8D39</td><td>$" + data.totalSeatsCost.toFixed(2) + "</td></tr>";
+    html += "<tr><td>Premium Requests \u8D85\u989D\u8D39</td><td>$" + data.overageCost.toFixed(4) + "</td></tr>";
+    html += "<tr style='font-weight:bold;border-top:2px solid var(--border)'><td>" + C.escapeHtml(monthLabel) + "\u9884\u4F30\u603B\u8D39\u7528</td><td>$" + data.totalEstimatedCost.toFixed(4) + "</td></tr></tbody></table>";
+    html += '<details style="margin-top:1rem"><summary style="cursor:pointer;color:var(--muted)">\u67E5\u770B API \u539F\u59CB\u8BA1\u8D39\u6570\u636E</summary>';
+    html += '<table style="margin-top:0.5rem"><thead><tr><th>SKU</th><th>\u6570\u91CF</th><th>\u5355\u4F4D</th><th>\u5355\u4EF7</th><th>\u603B\u989D</th><th>\u6298\u6263</th><th>\u51C0\u989D</th></tr></thead><tbody>';
+    (data.rawItems || []).forEach(function (item) {
+      html += "<tr><td>" + C.escapeHtml(item.sku) + "</td><td>" + (item.quantity != null ? item.quantity.toFixed(2) : "-") + "</td><td>" + C.escapeHtml(item.unitType) + "</td><td>$" + (item.pricePerUnit != null ? item.pricePerUnit.toFixed(2) : "-") + "</td><td>$" + (item.grossAmount != null ? item.grossAmount.toFixed(4) : "-") + "</td><td>$" + (item.discountAmount != null ? item.discountAmount.toFixed(4) : "-") + "</td><td>$" + (item.netAmount != null ? item.netAmount.toFixed(4) : "-") + "</td></tr>";
+    });
+    html += "</tbody></table></details>";
+    return html;
+  }
+
+  async function loadBillingSummary(force) {
+    var content = modalBody.querySelector("#billingSummaryContent");
+    var metaSpan = modalBody.querySelector("#billingSummaryMeta");
+    var sel = modalBody.querySelector("#billingSummaryMonth");
+    var btn = modalBody.querySelector("#btnBillingForceRefresh");
+    if (!content || !sel) return;
+    content.innerHTML = '<div class="loading">\u52A0\u8F7D\u4E2D...</div>';
+    if (metaSpan) metaSpan.textContent = "";
+    if (btn) btn.disabled = true;
     try {
-      await forceRefreshSeatsCache();
-      var data = await C.apiFetchJson("/api/billing/summary", {}, "获取账单汇总失败");
-      var html = '<h3>\u5e2d\u4f4d\u8ba2\u9605</h3><table><thead><tr><th>\u8ba2\u9605\u8ba1\u5212</th><th>\u5e2d\u4f4d\u6570</th><th>\u5355\u4ef7(\u6708)</th><th>\u5c0f\u8ba1(USD)</th><th>\u5355\u5e2d\u4f4d\u989d\u5ea6</th><th>\u603b\u989d\u5ea6</th></tr></thead><tbody>';
-      (data.planSummary || []).forEach(function (p) {
-        html += "<tr><td>Copilot " + C.escapeHtml(p.plan) + "</td><td>" + p.seats + "</td><td>$" + p.baseCost + "</td><td>$" + p.totalCost.toFixed(2) + "</td><td>" + p.quotaPerSeat + " requests</td><td>" + p.totalQuota + " requests</td></tr>";
-      });
-      html += '</tbody></table>';
-      html += '<h3>Premium Requests \u4f7f\u7528\u60c5\u51b5</h3><table><thead><tr><th>\u9879\u76ee</th><th>\u503c</th></tr></thead><tbody>';
-      html += '<tr><td>\u672c\u6708\u603b Premium Requests</td><td>' + data.totalPremiumRequests + '</td></tr>';
-      html += '<tr><td>\u8ba2\u9605\u5305\u542b\u989d\u5ea6</td><td>' + data.totalIncludedQuota + ' requests (' + data.totalSeats + ' \u5e2d\u4f4d)</td></tr>';
-      var usedPct = data.totalIncludedQuota > 0 ? (data.totalPremiumRequests / data.totalIncludedQuota * 100).toFixed(1) : "0";
-      html += '<tr><td>\u989d\u5ea6\u4f7f\u7528\u7387</td><td>' + usedPct + '%</td></tr>';
-      html += '<tr><td>\u8d85\u989d\u8bf7\u6c42\u6570</td><td>' + data.overageRequests + '</td></tr>';
-      html += '<tr><td>\u8d85\u989d\u5355\u4ef7</td><td>$' + data.premiumUnitPrice + '/request</td></tr>';
-      html += '<tr><td>\u8d85\u989d\u8d39\u7528</td><td>$' + data.overageCost.toFixed(4) + '</td></tr></tbody></table>';
-      html += '<h3>\u8d39\u7528\u6c47\u603b</h3><table><thead><tr><th>\u9879\u76ee</th><th>\u91d1\u989d(USD)</th></tr></thead><tbody>';
-      html += '<tr><td>\u5e2d\u4f4d\u8ba2\u9605\u8d39</td><td>$' + data.totalSeatsCost.toFixed(2) + '</td></tr>';
-      html += '<tr><td>Premium Requests \u8d85\u989d\u8d39</td><td>$' + data.overageCost.toFixed(4) + '</td></tr>';
-      html += '<tr style="font-weight:bold;border-top:2px solid var(--border)"><td>\u672c\u6708\u9884\u4f30\u603b\u8d39\u7528</td><td>$' + data.totalEstimatedCost.toFixed(4) + '</td></tr></tbody></table>';
-      html += '<details style="margin-top:1rem"><summary style="cursor:pointer;color:var(--muted)">\u67e5\u770b API \u539f\u59cb\u8ba1\u8d39\u6570\u636e</summary>';
-      html += '<table style="margin-top:0.5rem"><thead><tr><th>SKU</th><th>\u6570\u91cf</th><th>\u5355\u4f4d</th><th>\u5355\u4ef7</th><th>\u603b\u989d</th><th>\u6298\u6263</th><th>\u51c0\u989d</th></tr></thead><tbody>';
-      (data.rawItems || []).forEach(function (item) {
-        html += "<tr><td>" + C.escapeHtml(item.sku) + "</td><td>" + (item.quantity != null ? item.quantity.toFixed(2) : "-") + "</td><td>" + C.escapeHtml(item.unitType) + "</td><td>$" + (item.pricePerUnit != null ? item.pricePerUnit.toFixed(2) : "-") + "</td><td>$" + (item.grossAmount != null ? item.grossAmount.toFixed(4) : "-") + "</td><td>$" + (item.discountAmount != null ? item.discountAmount.toFixed(4) : "-") + "</td><td>$" + (item.netAmount != null ? item.netAmount.toFixed(4) : "-") + "</td></tr>";
-      });
-      html += '</tbody></table></details>';
-      modalBody.innerHTML = html;
-    } catch (err) { modalBody.innerHTML = '<div style="color:var(--danger)">' + C.escapeHtml(err.message) + "</div>"; }
+      var qs = [];
+      var v = sel.value;
+      if (v && v !== "current") {
+        var parts = v.split("-");
+        qs.push("year=" + parts[0]);
+        qs.push("month=" + parts[1]);
+      }
+      if (force) qs.push("force=1");
+      if (force) { try { await forceRefreshSeatsCache(); } catch (_e) {} }
+      var url = "/api/billing/summary" + (qs.length ? "?" + qs.join("&") : "");
+      var data = await C.apiFetchJson(url, {}, "\u83B7\u53D6\u8D26\u5355\u6C47\u603B\u5931\u8D25");
+      content.innerHTML = renderBillingSummaryBody(data);
+      if (metaSpan) {
+        var pad = function (n) { return n < 10 ? "0" + n : String(n); };
+        var srcLabel = data.overageCostSource === "api-netAmount" ? "GitHub API netAmount" : "\u672C\u5730\u516C\u5F0F";
+        metaSpan.textContent =
+          (data.isCurrentMonth ? "\u5F53\u6708 " : "\u5386\u53F2\u6708 ") +
+          data.year + "-" + pad(data.month) +
+          " \uFF5C \u8D85\u989D\u53E3\u5F84\uFF1A" + srcLabel +
+          (data.force ? " \uFF5C \u5DF2\u5F3A\u5236\u56DE\u6E90" : "");
+      }
+    } catch (err) {
+      content.innerHTML = '<div style="color:var(--danger)">' + C.escapeHtml(err.message) + "</div>";
+    } finally {
+      if (btn) btn.disabled = false;
+    }
+  }
+
+  btnBillingSummary.addEventListener("click", async function () {
+    openModal("\u6574\u4F53\u8D26\u5355\u6C47\u603B", renderBillingToolbar() + '<div id="billingSummaryContent"><div class="loading">\u52A0\u8F7D\u4E2D...</div></div>');
+    var sel = modalBody.querySelector("#billingSummaryMonth");
+    var btnForce = modalBody.querySelector("#btnBillingForceRefresh");
+    if (sel) sel.addEventListener("change", function () { loadBillingSummary(false); });
+    if (btnForce) btnForce.addEventListener("click", function () { loadBillingSummary(true); });
+    try { await forceRefreshSeatsCache(); } catch (_e) { /* non-fatal */ }
+    loadBillingSummary(false);
   });
 
   /* ── Models ── */

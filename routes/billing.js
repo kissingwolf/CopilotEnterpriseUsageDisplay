@@ -3,7 +3,7 @@
  */
 const express = require("express");
 const { requiredEnv, PLAN_CONFIG } = require("../lib/billing-config");
-const { githubGetJson } = require("../lib/github-api");
+const { githubGetJson, invalidateCacheByPrefix } = require("../lib/github-api");
 const { toNumber, writeError, buildEndpoint } = require("../lib/helpers");
 const { ensureSeatsData, fetchCopilotSeats } = require("./seats");
 
@@ -19,11 +19,32 @@ module.exports = function createBillingRouter({ usageStore, teamCache }) {
     } catch (error) { writeError(res, error); }
   });
 
-  router.get("/api/billing/summary", async (_req, res) => {
+  router.get("/api/billing/summary", async (req, res) => {
     try {
-      await ensureSeatsData(teamCache, usageStore);
+      const forceStr = String(req.query.force || "").toLowerCase();
+      const force = forceStr === "1" || forceStr === "true";
+      const yearParam = req.query.year ? Number(req.query.year) : null;
+      const monthParam = req.query.month ? Number(req.query.month) : null;
+      const hasPeriod =
+        Number.isInteger(yearParam) && yearParam > 2000 &&
+        Number.isInteger(monthParam) && monthParam >= 1 && monthParam <= 12;
+
+      // Force mode: also refresh seats snapshot and drop LRU for billing/usage
+      await ensureSeatsData(teamCache, usageStore, force);
+      if (force) {
+        invalidateCacheByPrefix("/settings/billing/usage");
+      }
+
       const endpoint = buildEndpoint();
-      const billingData = await githubGetJson(`/enterprises/${encodeURIComponent(endpoint.enterprise)}/settings/billing/usage`);
+      const params = new URLSearchParams();
+      if (hasPeriod) {
+        params.set("year", String(yearParam));
+        params.set("month", String(monthParam));
+      }
+      const billingData = await githubGetJson(
+        `/enterprises/${encodeURIComponent(endpoint.enterprise)}/settings/billing/usage`,
+        hasPeriod ? params : null
+      );
       const rawItems = Array.isArray(billingData?.usageItems) ? billingData.usageItems : [];
       const seats = teamCache.seatsRaw;
       const planCounts = {};
@@ -44,19 +65,36 @@ module.exports = function createBillingRouter({ usageStore, teamCache }) {
       const premiumUnitPrice = premiumItem ? toNumber(premiumItem.pricePerUnit) : 0.04;
       const grossPremiumCost = premiumItem ? toNumber(premiumItem.grossAmount) : 0;
       const discountPremiumCost = premiumItem ? toNumber(premiumItem.discountAmount) : 0;
+      const netPremiumCost = premiumItem ? toNumber(premiumItem.netAmount) : 0;
       const overageRequests = Math.max(0, totalPremiumRequests - totalIncludedQuota);
-      const overageCost = Math.round(overageRequests * premiumUnitPrice * 10000) / 10000;
+      const localOverageCost = Math.round(overageRequests * premiumUnitPrice * 10000) / 10000;
+      // Prefer API-authoritative netAmount (matches GitHub billing statement);
+      // fall back to locally computed overage only when premium row is absent.
+      const hasApiNet = premiumItem && premiumItem.netAmount != null;
+      const overageCost = hasApiNet
+        ? Math.round(netPremiumCost * 10000) / 10000
+        : localOverageCost;
+      const overageCostSource = hasApiNet ? "api-netAmount" : "local-formula";
       const totalEstimatedCost = Math.round((totalSeatsCost + overageCost) * 10000) / 10000;
 
+      const now = new Date();
       res.json({
-        ok: true, rawItems, planSummary, totalSeats: seats.length,
+        ok: true,
+        year: hasPeriod ? yearParam : now.getUTCFullYear(),
+        month: hasPeriod ? monthParam : (now.getUTCMonth() + 1),
+        isCurrentMonth: !hasPeriod,
+        force,
+        rawItems, planSummary, totalSeats: seats.length,
         totalSeatsCost, totalIncludedQuota,
         totalPremiumRequests: Math.round(totalPremiumRequests * 100) / 100,
         premiumUnitPrice,
         grossPremiumCost: Math.round(grossPremiumCost * 10000) / 10000,
         discountPremiumCost: Math.round(discountPremiumCost * 10000) / 10000,
+        netPremiumCost: Math.round(netPremiumCost * 10000) / 10000,
         overageRequests: Math.round(overageRequests * 100) / 100,
-        overageCost, totalEstimatedCost,
+        localOverageCost,
+        overageCost, overageCostSource,
+        totalEstimatedCost,
       });
     } catch (error) { writeError(res, error); }
   });
