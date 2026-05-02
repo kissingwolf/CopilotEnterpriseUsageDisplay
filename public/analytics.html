@@ -35,6 +35,7 @@
         <div class="analytics-tabs">
           <button class="analytics-tab active" data-pane="trend">趋势图</button>
           <button class="analytics-tab" data-pane="top">Top用户</button>
+          <button class="analytics-tab" data-pane="team">Team视角</button>
         </div>
 
         <div id="trendPane" class="analytics-pane active">
@@ -45,6 +46,17 @@
         <div id="topPane" class="analytics-pane">
           <div class="chart-container">
             <canvas id="topChart"></canvas>
+          </div>
+        </div>
+        <div id="teamPane" class="analytics-pane">
+          <div class="team-pane-header">
+            <span class="team-pane-label">选择 Team：</span>
+            <select id="teamSelect" class="team-select">
+              <option value="">全部 Team</option>
+            </select>
+          </div>
+          <div class="chart-container" id="teamChartContainer">
+            <canvas id="teamChart"></canvas>
           </div>
         </div>
       </section>

@@ -4,7 +4,7 @@
 const express = require("express");
 const { toNumber, pickUser, writeError } = require("../lib/helpers");
 
-module.exports = function createAnalyticsRouter({ usageStore, userMappingService }) {
+module.exports = function createAnalyticsRouter({ usageStore, userMappingService, teamCache }) {
   const router = express.Router();
 
   router.get("/api/analytics/trends", async (req, res) => {
@@ -87,6 +87,82 @@ module.exports = function createAnalyticsRouter({ usageStore, userMappingService
         });
 
       res.json({ ok: true, range, topUsers: top });
+    } catch (error) { writeError(res, error); }
+  });
+
+  /**
+   * GET /api/analytics/team-view
+   * Query params:
+   *   range  – 30 | 90 | 365  (default 30)
+   *   team   – team name (optional). If omitted/empty → return per-team avg requests.
+   *            If provided → return Top-20 members of that team.
+   */
+  router.get("/api/analytics/team-view", async (req, res) => {
+    try {
+      const range = Number(req.query.range) || 30;
+      const teamFilter = (req.query.team || "").trim();
+
+      const endDate = new Date();
+      const startDate = new Date(endDate);
+      startDate.setUTCDate(startDate.getUTCDate() - range + 1);
+      const startStr = startDate.toISOString().slice(0, 10);
+      const endStr = endDate.toISOString().slice(0, 10);
+
+      // ── 1. Aggregate requests per GitHub login from daily_usage cache ──
+      const days = usageStore.getDaysInRange(startStr, endStr);
+      const byLogin = new Map(); // login → totalRequests
+      for (const d of days) {
+        if (d.ranking) {
+          const ranking = typeof d.ranking === "string" ? JSON.parse(d.ranking) : d.ranking;
+          for (const row of ranking) {
+            byLogin.set(row.user, (byLogin.get(row.user) || 0) + row.requests);
+          }
+        } else {
+          const payload = typeof d.data === "string" ? JSON.parse(d.data) : d.data;
+          const usageItems = Array.isArray(payload?.usageItems) ? payload.usageItems : [];
+          for (const item of usageItems) {
+            const user = pickUser(item);
+            if (user === "(unknown)") continue;
+            const requests = toNumber(item.netQuantity) || toNumber(item.grossQuantity) || toNumber(item.quantity) || toNumber(item.requests);
+            byLogin.set(user, (byLogin.get(user) || 0) + requests);
+          }
+        }
+      }
+
+      // ── 2. Build team → members map from seats snapshot ──
+      const seats = (teamCache && teamCache.seatsRaw) || [];
+      const teamMembers = new Map(); // teamName → [{ login, adName }]
+      for (const seat of seats) {
+        const teamName = seat.team || "未分配团队";
+        const mapped = userMappingService.getUserByGithub(seat.login);
+        const entry = { login: seat.login, adName: mapped ? mapped.adName : null };
+        if (!teamMembers.has(teamName)) teamMembers.set(teamName, []);
+        teamMembers.get(teamName).push(entry);
+      }
+
+      if (teamFilter === "") {
+        // ── 全选模式: per-team avg requests ──
+        const teamStats = [];
+        for (const [teamName, members] of teamMembers) {
+          let total = 0;
+          for (const m of members) total += byLogin.get(m.login) || 0;
+          const avg = members.length > 0 ? Math.round(total / members.length * 100) / 100 : 0;
+          teamStats.push({ team: teamName, members: members.length, totalRequests: Math.round(total * 100) / 100, avgRequests: avg });
+        }
+        teamStats.sort((a, b) => b.avgRequests - a.avgRequests);
+        return res.json({ ok: true, range, mode: "teams", teamStats });
+      }
+
+      // ── 明细模式: Top-20 members of selected team ──
+      const members = teamMembers.get(teamFilter) || [];
+      const memberRows = members.map((m) => ({
+        login: m.login,
+        user: m.adName || m.login,
+        requests: Math.round((byLogin.get(m.login) || 0) * 100) / 100,
+      }));
+      memberRows.sort((a, b) => b.requests - a.requests);
+      const top20 = memberRows.slice(0, 20).map((r, i) => ({ rank: i + 1, user: r.user, requests: r.requests }));
+      res.json({ ok: true, range, mode: "members", team: teamFilter, teamMembers: top20 });
     } catch (error) { writeError(res, error); }
   });
 

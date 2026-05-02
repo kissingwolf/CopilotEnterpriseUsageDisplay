@@ -12,11 +12,15 @@
   var analyticTabs = document.querySelectorAll(".analytics-tab");
   var trendPane = document.getElementById("trendPane");
   var topPane = document.getElementById("topPane");
+  var teamPane = document.getElementById("teamPane");
+  var teamSelect = document.getElementById("teamSelect");
 
   /* ── State ── */
   var currentRange = 30;
   var trendChart = null;
   var topChart = null;
+  var teamChart = null;
+  var teamListLoaded = false;
   var latestMetaText = "";
 
   /* ── Local helpers ── */
@@ -161,6 +165,88 @@
     });
   }
 
+  /* ── Render team view chart ── */
+  function renderTeamChart(data) {
+    var container = document.getElementById("teamChartContainer");
+    var ctx = document.getElementById("teamChart").getContext("2d");
+    if (teamChart) teamChart.destroy();
+
+    var labels, values, xLabel;
+    if (data.mode === "teams") {
+      labels = (data.teamStats || []).map(function (t) { return t.team; });
+      values = (data.teamStats || []).map(function (t) { return t.avgRequests; });
+      xLabel = "人均请求量";
+    } else {
+      labels = (data.teamMembers || []).map(function (m) { return m.user; });
+      values = (data.teamMembers || []).map(function (m) { return m.requests; });
+      xLabel = "请求量";
+    }
+
+    var barHeight = 30;
+    var minH = Math.max(300, labels.length * barHeight + 60);
+    container.style.minHeight = minH + "px";
+
+    teamChart = new Chart(ctx, {
+      type: "bar",
+      data: {
+        labels: labels,
+        datasets: [{
+          label: xLabel,
+          data: values,
+          backgroundColor: "#1a7f5a",
+          borderRadius: 4,
+        }],
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        indexAxis: "y",
+        plugins: {
+          legend: { display: false },
+          tooltip: {
+            callbacks: {
+              label: function (ctx) {
+                return formatNumber(ctx.parsed.x) + " requests";
+              },
+            },
+          },
+        },
+        scales: {
+          x: { title: { display: true, text: xLabel } },
+          y: { ticks: { autoSkip: false } },
+        },
+      },
+    });
+  }
+
+  /* ── Load team list into select ── */
+  function loadTeamList() {
+    if (teamListLoaded) return;
+    C.apiFetchJson("/api/enterprise-teams", {}, "获取 Team 列表失败")
+      .then(function (data) {
+        var teams = (data.teams || []).map(function (t) { return t.name || t.slug; }).sort();
+        teams.forEach(function (name) {
+          var opt = document.createElement("option");
+          opt.value = name;
+          opt.textContent = name;
+          teamSelect.appendChild(opt);
+        });
+        teamListLoaded = true;
+      })
+      .catch(function () { /* silently ignore — select stays with "全部 Team" only */ });
+  }
+
+  /* ── Refresh team chart ── */
+  function refreshTeamChart() {
+    var team = teamSelect.value;
+    var url = "/api/analytics/team-view?range=" + currentRange + (team ? "&team=" + encodeURIComponent(team) : "");
+    C.apiFetchJson(url, {}, "获取 Team 视角数据失败")
+      .then(function (data) { renderTeamChart(data); })
+      .catch(function (err) { setError(err instanceof Error ? err.message : String(err)); });
+  }
+
+  teamSelect.addEventListener("change", refreshTeamChart);
+
   /* ── Refresh data ── */
   async function refresh() {
     setError("");
@@ -179,6 +265,8 @@
       renderSummaryCards(summary);
       if (trend.trend && trend.trend.length > 0) renderTrendChart(trend.trend);
       if (top.topUsers && top.topUsers.length > 0) renderTopChart(top.topUsers);
+      // Refresh team chart if its pane is active; otherwise it will load on first tab switch
+      if (teamPane.classList.contains("active")) refreshTeamChart();
 
       var now = new Date();
       var loadTimeStr = now.toLocaleString("zh-CN", { hour12: false });
@@ -213,9 +301,14 @@
       tab.classList.add("active");
       trendPane.classList.toggle("active", tab.dataset.pane === "trend");
       topPane.classList.toggle("active", tab.dataset.pane === "top");
+      teamPane.classList.toggle("active", tab.dataset.pane === "team");
       // Resize visible chart so it measures the now-visible container correctly
       if (tab.dataset.pane === "trend" && trendChart) trendChart.resize();
       if (tab.dataset.pane === "top" && topChart) topChart.resize();
+      if (tab.dataset.pane === "team") {
+        loadTeamList();
+        refreshTeamChart();
+      }
     });
   });
 

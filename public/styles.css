@@ -1159,6 +1159,31 @@ tbody tr:hover {
   max-width: 100%;
 }
 
+/* ── Team pane header ── */
+.team-pane-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 24px 0;
+}
+
+.team-pane-label {
+  font-size: 13px;
+  color: var(--ink-muted, #666);
+  white-space: nowrap;
+}
+
+.team-select {
+  padding: 5px 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  font-size: 13px;
+  background: var(--card);
+  color: var(--ink);
+  cursor: pointer;
+  max-width: 260px;
+}
+
 /* ── Bill page ── */
 .month-picker {
   padding: 7px 14px;
