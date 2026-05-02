@@ -118,6 +118,11 @@
     var ctx = document.getElementById("topChart").getContext("2d");
     if (topChart) topChart.destroy();
 
+    // Dynamic container height: ensure enough room for all user labels
+    var barHeight = 30;
+    var minH = Math.max(300, topUsers.length * barHeight + 60);
+    ctx.canvas.parentElement.style.minHeight = minH + "px";
+
     var labels = topUsers.map(function (u) { return u.user; });
     var requests = topUsers.map(function (u) { return Math.round(u.requests); });
 
@@ -136,6 +141,7 @@
       },
       options: {
         responsive: true,
+        maintainAspectRatio: false,
         indexAxis: "y",
         plugins: {
           legend: { display: false },
@@ -149,7 +155,7 @@
         },
         scales: {
           x: { title: { display: true, text: "请求量" } },
-          y: { ticks: { maxTicksLimit: 20 } },
+          y: { ticks: { autoSkip: false } },
         },
       },
     });
@@ -207,6 +213,9 @@
       tab.classList.add("active");
       trendPane.classList.toggle("active", tab.dataset.pane === "trend");
       topPane.classList.toggle("active", tab.dataset.pane === "top");
+      // Resize visible chart so it measures the now-visible container correctly
+      if (tab.dataset.pane === "trend" && trendChart) trendChart.resize();
+      if (tab.dataset.pane === "top" && topChart) topChart.resize();
     });
   });
 
