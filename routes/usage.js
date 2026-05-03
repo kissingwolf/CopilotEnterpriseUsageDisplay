@@ -122,8 +122,9 @@ module.exports = function createUsageRouter({ usageStore, teamCache, userMapping
    *
    * Returns null (so caller falls back to GitHub API) when the local cache is
    * NOT trustworthy enough to represent the full cycle. Three integrity checks:
-   *   1. Coverage: every expected day (1..endDay) must exist in SQLite.
+   *   1. Coverage: every expected day (startDay..endDay) must exist in SQLite.
    *      - endDay = today (for current month) or last day of that month.
+   *      - startDay = COPILOT_START_DATE's day (if same month), else 1.
    *   2. Recency: the most recent 3 days must have been fetched within
    *      RECENT_TTL_MS (1h) — GitHub has 24~48h delay, fresh near-end data is
    *      critical to avoid "daily > cycle" paradox.
@@ -135,6 +136,25 @@ module.exports = function createUsageRouter({ usageStore, teamCache, userMapping
     const RECENT_TTL_MS = 60 * 60 * 1000;
     const RECENT_WINDOW_DAYS = 3;
 
+    /* ── Compute cycle start day ── */
+    let cycleStartDay = 1;
+    const copilotStartDate = process.env.COPILOT_START_DATE || "";
+    if (copilotStartDate) {
+      const m = copilotStartDate.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+      if (m) {
+        const startY = Number(m[1]);
+        const startM = Number(m[2]);
+        const startD = Number(m[3]);
+        if (year < startY || (year === startY && month < startM)) {
+          // Month is entirely before Copilot started — no data expected
+          return null;
+        }
+        if (year === startY && month === startM) {
+          cycleStartDay = startD;
+        }
+      }
+    }
+
     const now = new Date();
     const isCurrentMonth =
       now.getUTCFullYear() === year && now.getUTCMonth() + 1 === month;
@@ -145,17 +165,17 @@ module.exports = function createUsageRouter({ usageStore, teamCache, userMapping
     const endDay = isCurrentMonth
       ? Math.min(now.getUTCDate(), lastDayOfMonth)
       : lastDayOfMonth;
-    const expectedDays = endDay; // days 1..endDay
+    const expectedDays = endDay - cycleStartDay + 1; // days startDay..endDay
 
     const pad = (n) => String(n).padStart(2, "0");
-    const startStr = `${year}-${pad(month)}-01`;
+    const startStr = `${year}-${pad(month)}-${pad(cycleStartDay)}`;
     const endStr = `${year}-${pad(month)}-${pad(endDay)}`;
     const rows = usageStore.getDaysInRange(startStr, endStr);
 
     /* Integrity check 1: coverage */
     if (rows.length < expectedDays) {
       logger.info(
-        { year, month, haveDays: rows.length, expectedDays },
+        { year, month, startDay: cycleStartDay, endDay, haveDays: rows.length, expectedDays },
         "SQLite cycle incomplete (missing days), falling back to GitHub API"
       );
       return null;
@@ -173,7 +193,7 @@ module.exports = function createUsageRouter({ usageStore, teamCache, userMapping
     const freshCutoff = Date.now() - RECENT_TTL_MS;
     for (let i = 0; i < RECENT_WINDOW_DAYS; i += 1) {
       const d = endDay - i;
-      if (d < 1) break;
+      if (d < cycleStartDay) break;
       const key = `${year}-${pad(month)}-${pad(d)}`;
       const row = rowByDate.get(key);
       if (!row) {
@@ -181,7 +201,7 @@ module.exports = function createUsageRouter({ usageStore, teamCache, userMapping
         return null;
       }
       const fetchedAtMs = new Date(row.fetched_at).getTime();
-      if (!Number.isFinite(fetchedAtMs) || fetchedAtMs < freshCutoff) {
+      if (isCurrentMonth && (!Number.isFinite(fetchedAtMs) || fetchedAtMs < freshCutoff)) {
         logger.info(
           { date: key, fetched_at: row.fetched_at },
           "SQLite cycle: recent day stale, falling back to GitHub API"
@@ -189,7 +209,7 @@ module.exports = function createUsageRouter({ usageStore, teamCache, userMapping
         return null;
       }
       const rawCount = typeof row.raw_count === "number" ? row.raw_count : 0;
-      if (rawCount > 0 && row.mode !== "per-user-fallback") {
+      if (isCurrentMonth && rawCount > 0 && row.mode !== "per-user-fallback") {
         logger.info(
           { date: key, mode: row.mode, rawCount },
           "SQLite cycle: recent day not per-user-fallback (likely mid-state), falling back"

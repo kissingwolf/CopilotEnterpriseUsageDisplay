@@ -326,13 +326,23 @@
   }
 
   refreshBtn.addEventListener("click", function () { refresh(); });
-  /* 首屏加载：若有 localStorage 缓存先渲染，然后统一走一次 refresh 即可——只发一个请求 */
+  /* 首屏加载：若有 localStorage 缓存先渲染，否则尝试服务端缓存（GET /api/usage），
+     均无数据时显示骨架屏。无论是否有缓存，都后台刷新一次以获取最新数据。 */
   (function initLoad() {
     var body = buildBody();
     var key = cacheKeyForBody(body);
     var cached = C.getCachedData(key, CACHE_TTL_MS);
     if (cached) { currentPage = 1; render(cached); }
-    else C.renderSkeletonRows(tbody, activeMode === "single" ? 6 : 5, 8);
+    else {
+      // Fallback: 读取服务端内存中的上次结果（不触发刷新）
+      C.apiFetchJson("/api/usage", {}, "").then(function (data) {
+        if (data && data.ok && data.ranking && data.ranking.length > 0) {
+          currentPage = 1;
+          render(data);
+        }
+      }).catch(function () { /* no server cache, skip */ });
+      C.renderSkeletonRows(tbody, activeMode === "single" ? 6 : 5, 8);
+    }
     refresh({ background: true }).catch(function (err) {
       setMetaRefreshing(false);
       setError(err instanceof Error ? err.message : String(err));

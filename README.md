@@ -217,6 +217,7 @@ node ./scripts/preflight-check.js --strict
 | `SCHED_DAILY_TIMES` | 否 | 逗号分隔的本地时间 `HH:MM` 列表，默认 `03:00,12:00` |
 | `SCHED_BACKFILL_DAYS` | 否 | 调度器每次运行时除今天外额外回填的天数，默认 `2`（即今天+昨天+前天） |
 | `SCHED_STARTUP_DELAY_MS` | 否 | 启动后首次刷今天数据的延迟毫秒数，默认 `5000` |
+| `COPILOT_START_DATE` | 否 | Copilot 启用日期（`YYYY-MM-DD`）。用于月度周期聚合时跳过启用前的日期，避免"覆盖完整性"误判 |
 
 ## 缓存架构
 
@@ -484,6 +485,12 @@ sudo systemctl reload nginx
 | Enterprise | 1000 requests | $39 | $0.04/request |
 
 ## 更新日志
+
+### v2.7 — 首页首屏秒开 + 历史月周期聚合修复
+
+- **首页先渲染服务端缓存再后台刷新** — `public/script.js` 的 `initLoad()` 在 localStorage 缓存未命中时，先 `GET /api/usage` 读取服务端内存中上一次的结果并立即渲染，然后后台执行 `POST /api/usage/refresh`。用户打开页面时先看到上次数据（即使是旧的），而非等待 4–10 秒骨架屏；新数据加载完成后无感知替换。
+- **`buildCycleFromSQLite` 支持 `COPILOT_START_DATE`** — 新增环境变量 `COPILOT_START_DATE=YYYY-MM-DD`，指定 Copilot 启用日期。月度周期聚合的覆盖完整性检查从 `1..endDay` 改为 `startDay..endDay`，跳过启用前的"预期空日期"，避免误判为数据不完整。
+- **历史月份新鲜度检查改为仅对当前月生效** — `buildCycleFromSQLite` 的近 3 天新鲜度（1h TTL）和 `per-user-fallback` 模式校验，原来对所有月份强制执行。历史月份的数据写入完成后 `fetched_at` 必然超过 1 小时，导致新鲜度检查误杀。修复后仅对当前月（`isCurrentMonth = true`）保留这些限制，历史月份只要求数据完整性 + ranking 非空。
 
 ### v2.5 — Team 月度账单用户名映射持久化
 
