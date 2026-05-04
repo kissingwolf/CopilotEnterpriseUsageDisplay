@@ -109,15 +109,13 @@ async function fetchEnterpriseTeamMembers(enterprise, teamId) {
 
 module.exports = function createCostCenterRouter({ userMappingService } = {}) {
   // Non-destructive adName enrichment for user-type resources.
-  const enrichResourcesWithAdName = (resources) => {
+  const enrichResourcesWithAdName = (resources, lookup) => {
     if (!Array.isArray(resources)) return [];
-    if (!userMappingService) return resources;
+    if (!lookup) return resources;
     return resources.map((r) => {
       if (String(r?.type || "").toLowerCase() !== "user") return r;
-      try {
-        const mapped = userMappingService.getUserByGithub(r?.name || "");
-        return mapped && mapped.adName ? { ...r, adName: mapped.adName } : r;
-      } catch { return r; }
+      const mapped = lookup[(r?.name || "").trim().toLowerCase()] || null;
+      return mapped && mapped.adName ? { ...r, adName: mapped.adName } : r;
     });
   };
   const router = express.Router();
@@ -145,7 +143,7 @@ module.exports = function createCostCenterRouter({ userMappingService } = {}) {
           budgetAmount: budgetInfo ? budgetInfo.amount : null,
           spentAmount: spentByName.get(nameKey) ?? null,
           state: cc.state || "-", azureSubscription: cc.azure_subscription || "",
-          resources: enrichResourcesWithAdName(resources),
+          resources: enrichResourcesWithAdName(resources, userMappingService.buildLookup(resources.filter((r) => r?.type === "user").map((r) => r?.name))),
         };
       });
 
@@ -177,7 +175,7 @@ module.exports = function createCostCenterRouter({ userMappingService } = {}) {
           budgetAmount: budgetInfo ? budgetInfo.amount : null,
           spentAmount: spentByName.get(nameKey) ?? null,
           state: found.state || "-", azureSubscription: found.azure_subscription || "",
-          resources: enrichResourcesWithAdName(Array.isArray(found.resources) ? found.resources : []),
+          resources: enrichResourcesWithAdName(Array.isArray(found.resources) ? found.resources : [], userMappingService.buildLookup((Array.isArray(found.resources) ? found.resources : []).filter((r) => r?.type === "user").map((r) => r?.name))),
         },
       });
     } catch (error) { writeError(res, error); }

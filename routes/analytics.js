@@ -72,19 +72,20 @@ module.exports = function createAnalyticsRouter({ usageStore, userMappingService
         }
       }
 
-      const top = Array.from(byUser.values())
+      const topRaw = Array.from(byUser.values())
         .sort((a, b) => b.requests - a.requests)
-        .slice(0, 20)
-        .map((row, idx) => {
-          const mapped = userMappingService.getUserByGithub(row.user);
-          return {
-            rank: idx + 1,
-            user: mapped ? mapped.adName : row.user,
-            adName: mapped ? mapped.adName : null,
-            requests: Math.round(row.requests * 100) / 100,
-            amount: Math.round(row.amount * 10000) / 10000,
-          };
-        });
+        .slice(0, 20);
+      const topLookup = userMappingService.buildLookup(topRaw.map((r) => r.user));
+      const top = topRaw.map((row, idx) => {
+        const mapped = topLookup[row.user.toLowerCase()] || null;
+        return {
+          rank: idx + 1,
+          user: mapped ? mapped.adName : row.user,
+          adName: mapped ? mapped.adName : null,
+          requests: Math.round(row.requests * 100) / 100,
+          amount: Math.round(row.amount * 10000) / 10000,
+        };
+      });
 
       res.json({ ok: true, range, topUsers: top });
     } catch (error) { writeError(res, error); }
@@ -131,10 +132,11 @@ module.exports = function createAnalyticsRouter({ usageStore, userMappingService
 
       // ── 2. Build team → members map from seats snapshot ──
       const seats = (teamCache && teamCache.seatsRaw) || [];
+      const seatLookup = userMappingService.buildLookup(seats.map((s) => s.login));
       const teamMembers = new Map(); // teamName → [{ login, adName }]
       for (const seat of seats) {
         const teamName = seat.team || "未分配团队";
-        const mapped = userMappingService.getUserByGithub(seat.login);
+        const mapped = seatLookup[seat.login.toLowerCase()] || null;
         const entry = { login: seat.login, adName: mapped ? mapped.adName : null };
         if (!teamMembers.has(teamName)) teamMembers.set(teamName, []);
         teamMembers.get(teamName).push(entry);

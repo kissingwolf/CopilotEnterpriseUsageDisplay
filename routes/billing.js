@@ -11,14 +11,12 @@ module.exports = function createBillingRouter({ usageStore, teamCache, userMappi
   const router = express.Router();
 
   // Non-destructive adName enrichment: never mutates teamCache.seatsRaw.
-  const enrichSeatsWithAdName = (seats) => {
+  const enrichSeatsWithAdName = (seats, lookup) => {
     if (!Array.isArray(seats)) return [];
-    if (!userMappingService) return seats;
+    if (!lookup) return seats;
     return seats.map((s) => {
-      try {
-        const mapped = userMappingService.getUserByGithub(s.login || "");
-        return mapped && mapped.adName ? { ...s, adName: mapped.adName } : { ...s, adName: "" };
-      } catch { return { ...s, adName: "" }; }
+      const mapped = lookup[(s.login || "").trim().toLowerCase()] || null;
+      return mapped && mapped.adName ? { ...s, adName: mapped.adName } : { ...s, adName: "" };
     });
   };
 
@@ -27,7 +25,9 @@ module.exports = function createBillingRouter({ usageStore, teamCache, userMappi
       const shouldRefresh = String(req.query.refresh || "").toLowerCase();
       const forceRefresh = shouldRefresh === "1" || shouldRefresh === "true";
       await ensureSeatsData(teamCache, usageStore, forceRefresh);
-      const seats = enrichSeatsWithAdName(teamCache.seatsRaw);
+      const seatLogins = teamCache.seatsRaw.map((s) => s.login);
+      const lookup = userMappingService.buildLookup(seatLogins);
+      const seats = enrichSeatsWithAdName(teamCache.seatsRaw, lookup);
       res.json({ ok: true, fetchedAt: teamCache.fetchedAt, totalSeats: seats.length, seats });
     } catch (error) { writeError(res, error); }
   });

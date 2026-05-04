@@ -160,6 +160,8 @@ module.exports = function createBillRouter({ usageStore, teamCache, userMappingS
 
     // 2. Build per-user bill rows
     const computedAt = new Date().toISOString();
+    const seatLogins = seats.map((s) => s.login);
+    const lookup = userMappingService.buildLookup(seatLogins);
     const billRows = [];
 
     for (const seat of seats) {
@@ -173,7 +175,7 @@ module.exports = function createBillRouter({ usageStore, teamCache, userMappingS
       const overageCost = Math.round(overageRequests * cfg.overagePrice * 10000) / 10000;
       const totalCost = Math.round((seatCost + overageCost) * 10000) / 10000;
 
-      const mapped = userMappingService.getUserByGithub(login);
+      const mapped = lookup[login.toLowerCase()] || null;
       billRows.push({
         yearMonth,
         team: team === "-" ? "未分配团队" : team,
@@ -270,9 +272,11 @@ module.exports = function createBillRouter({ usageStore, teamCache, userMappingS
         // Self-heal adName for legacy rows written before the ad_name column
         // migration (schema v2.5). Falls back to current user mapping so the
         // user sees AD names without needing a force-refresh.
+        const missingAdLogins = billRows.filter((r) => !r.adName).map((r) => r.login);
+        const adLookup = userMappingService.buildLookup(missingAdLogins);
         for (const row of billRows) {
           if (!row.adName) {
-            const mapped = userMappingService.getUserByGithub(row.login);
+            const mapped = adLookup[row.login.toLowerCase()] || null;
             if (mapped) row.adName = mapped.adName;
           }
         }
@@ -437,9 +441,11 @@ module.exports = function createBillRouter({ usageStore, teamCache, userMappingS
 
       if (cached && period.status === "complete") {
         billRows = usageStore.getBill(ym);
+        const missingAdLogins = billRows.filter((r) => !r.adName).map((r) => r.login);
+        const adLookup = userMappingService.buildLookup(missingAdLogins);
         for (const row of billRows) {
           if (!row.adName) {
-            const mapped = userMappingService.getUserByGithub(row.login);
+            const mapped = adLookup[row.login.toLowerCase()] || null;
             if (mapped) row.adName = mapped.adName;
           }
         }

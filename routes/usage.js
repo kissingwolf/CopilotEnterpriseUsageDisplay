@@ -2,6 +2,7 @@
  * Usage routes – GET /api/usage, POST /api/usage/refresh
  */
 const express = require("express");
+const { LRUCache } = require("lru-cache");
 const logger = require("../lib/logger");
 const { requiredEnv, INCLUDED_QUOTA, PLAN_CONFIG, calcAmount } = require("../lib/billing-config");
 const { githubGetJson } = require("../lib/github-api");
@@ -14,7 +15,7 @@ module.exports = function createUsageRouter({ usageStore, teamCache, userMapping
   const router = express.Router();
 
   /* ── In-memory caches for refresh dedup ── */
-  const refreshCache = new Map();
+  const refreshCache = new LRUCache({ max: 200, ttl: CACHE_TTL_MS, noDisposeOnSet: true });
   const refreshInFlight = new Map();
 
   /* ── State (server-side latest result) ── */
@@ -71,12 +72,12 @@ module.exports = function createUsageRouter({ usageStore, teamCache, userMapping
     return seat ? seat.planType : "business";
   }
 
-  function enrichRanking(ranking) {
+  function enrichRanking(ranking, lookup) {
     return ranking.map((row) => {
       const planType = getUserPlanType(row.user);
       const cfg = PLAN_CONFIG[planType] || PLAN_CONFIG.business;
       const reqsForPct = row.cycleRequests != null ? row.cycleRequests : row.requests;
-      const mapped = userMappingService.getUserByGithub(row.user);
+      const mapped = lookup[row.user.toLowerCase()] || null;
       const result = {
         user: row.user,
         adName: mapped ? mapped.adName : null,
@@ -259,8 +260,8 @@ module.exports = function createUsageRouter({ usageStore, teamCache, userMapping
     const cacheKey = JSON.stringify(dateOverride || {});
     if (!force) {
       const cached = refreshCache.get(cacheKey);
-      if (cached && Date.now() - cached.ts < CACHE_TTL_MS) {
-        logger.debug({ cacheKey, ageMs: Date.now() - cached.ts }, "Refresh cache hit");
+      if (cached) {
+        logger.debug({ cacheKey }, "Refresh cache hit");
         return { result: cached.result, cacheHit: "memory" };
       }
     }
@@ -327,7 +328,7 @@ module.exports = function createUsageRouter({ usageStore, teamCache, userMapping
           }
         }
         const result = { ranking, mode, rawItemsCount: cachedDay.raw_count, source: cachedDay.source };
-        refreshCache.set(cacheKey, { ts: Date.now(), result });
+        refreshCache.set(cacheKey, { result });
         return { result, cacheHit: "sqlite" };
       }
     }
@@ -337,7 +338,7 @@ module.exports = function createUsageRouter({ usageStore, teamCache, userMapping
       const sqliteRanking = buildCycleFromSQLite(year, month);
       if (sqliteRanking) {
         const result = { ranking: sqliteRanking, mode: "sqlite-cycle", rawItemsCount: 0, source: buildEndpoint().scope };
-        refreshCache.set(cacheKey, { ts: Date.now(), result });
+        refreshCache.set(cacheKey, { result });
         return { result, cacheHit: "sqlite" };
       }
     }
@@ -363,7 +364,7 @@ module.exports = function createUsageRouter({ usageStore, teamCache, userMapping
     if (day) {
       usageStore.saveDay(dateKey, year, month, day, data, mode, result.rawItemsCount, endpoint.scope, new Date().toISOString(), ranking.length > 0 ? ranking : null);
     }
-    refreshCache.set(cacheKey, { ts: Date.now(), result });
+    refreshCache.set(cacheKey, { result });
     return { result, cacheHit: "github" };
   }
 
@@ -462,7 +463,9 @@ module.exports = function createUsageRouter({ usageStore, teamCache, userMapping
         dateLabel = `${labelYear}-${labelMonth}${requiredEnv("BILLING_DAY") ? "-" + requiredEnv("BILLING_DAY") : ""}`;
       }
 
-      ranking = enrichRanking(ranking);
+      const userLookups = ranking.map((r) => r.user);
+      const lookup = userMappingService.buildLookup(userLookups);
+      ranking = enrichRanking(ranking, lookup);
       const resolvedQueryMode = (queryMode === "range" && startDate && endDate) ? "range"
         : (queryMode === "single" && date) ? "single" : "default";
       Object.assign(state, {

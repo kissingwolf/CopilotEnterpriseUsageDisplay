@@ -106,8 +106,9 @@ module.exports = function createUserMappingRouter({ userMappingService, usageSto
     try {
       await ensureSeatsData(teamCache, usageStore);
       const seats = teamCache.seatsRaw;
+      const seatLookup = userMappingService.buildLookup(seats.map((s) => s.login));
       const members = seats.map((seat) => {
-        const mapped = userMappingService.getUserByGithub(seat.login);
+        const mapped = seatLookup[seat.login.toLowerCase()] || null;
         return {
           login: seat.login,
           team: (teamCache.userTeamMap[seat.login] || []).join(", ") || "-",

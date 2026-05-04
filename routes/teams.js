@@ -34,12 +34,13 @@ async function getTeamMemberCountCached(enterprise, teamId) {
 }
 
 module.exports = function createTeamsRouter({ teamCache, userMappingService }) {
-  const resolveAdName = (login) => {
-    if (!userMappingService || !login) return "";
-    try {
-      const mapped = userMappingService.getUserByGithub(login);
-      return mapped && mapped.adName ? mapped.adName : "";
-    } catch { return ""; }
+  const enrichMembersWithAdName = (members, lookup) => {
+    if (!Array.isArray(members)) return [];
+    if (!lookup) return members;
+    return members.map((m) => {
+      const mapped = lookup[(m.login || "").trim().toLowerCase()] || null;
+      return mapped && mapped.adName ? { ...m, adName: mapped.adName } : { ...m, adName: "" };
+    });
   };
 
   const router = express.Router();
@@ -84,13 +85,15 @@ module.exports = function createTeamsRouter({ teamCache, userMappingService }) {
         );
         const batch = Array.isArray(raw) ? raw : [];
         for (const m of batch) {
-          const login = m.login || "";
-          allMembers.push({ login, adName: resolveAdName(login), avatarUrl: m.avatar_url || "", htmlUrl: m.html_url || "" });
+          allMembers.push({ login: m.login || "", avatarUrl: m.avatar_url || "", htmlUrl: m.html_url || "" });
         }
         if (batch.length < 100) break;
         page += 1;
       }
-      res.json({ ok: true, totalMembers: allMembers.length, members: allMembers });
+      const logins = allMembers.map((m) => m.login);
+      const lookup = userMappingService ? userMappingService.buildLookup(logins) : null;
+      const enriched = enrichMembersWithAdName(allMembers, lookup);
+      res.json({ ok: true, totalMembers: enriched.length, members: enriched });
     } catch (error) { writeError(res, error); }
   });
 
