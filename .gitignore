@@ -6,3 +6,5 @@ data/
 .vscode/
 .qoder/
 server.log
+skills-lock.json
+skills/
