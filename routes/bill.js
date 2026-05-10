@@ -234,6 +234,74 @@ module.exports = function createBillRouter({ usageStore, teamCache, userMappingS
     return teams;
   }
 
+  /**
+   * Reusable monthly bill computation, mirroring GET /api/bill but without
+   * the HTTP layer. Used by other routers (e.g. cost-center) to align with
+   * billpage's "套餐外附加费" (overageCost) numbers.
+   *
+   * Returns { ok, yearMonth, status, message, dateRange, teams, grandTotal }.
+   * Throws on invalid year/month or computation errors.
+   */
+  async function getMonthlyBillTeams(year, month) {
+    if (!Number.isFinite(year) || !Number.isFinite(month)) throw new Error("无效的年份或月份");
+    if (month < 1 || month > 12) throw new Error("无效的月份");
+    if (year < 2020 || year > 2100) throw new Error("无效的年份");
+
+    const ym = yearMonthKey(year, month);
+    const period = resolveBillPeriod(year, month);
+
+    if (period.status === "aggregating") {
+      return {
+        ok: true, yearMonth: ym, status: period.status, message: period.message,
+        dateRange: null, teams: [],
+        grandTotal: { seatCost: 0, overageCost: 0, totalCost: 0, totalMembers: 0 },
+      };
+    }
+
+    let billRows;
+    let noUsage = false;
+    const cached = usageStore.hasBill(ym);
+
+    if (cached && period.status === "complete") {
+      billRows = usageStore.getBill(ym);
+      const missingAdLogins = billRows.filter((r) => !r.adName).map((r) => r.login);
+      const adLookup = userMappingService.buildLookup(missingAdLogins);
+      for (const row of billRows) {
+        if (!row.adName) {
+          const mapped = adLookup[row.login.toLowerCase()] || null;
+          if (mapped) row.adName = mapped.adName;
+        }
+      }
+      const totalRequests = billRows.reduce((s, r) => s + (r.requests || 0), 0);
+      if (billRows.length > 0 && totalRequests === 0) {
+        logger.info({ yearMonth: ym }, "Cached bill has zero usage, recomputing");
+        const result = await computeBill(year, month, period);
+        billRows = result.billRows;
+        noUsage = result.hasUsage === false;
+      }
+    } else {
+      const result = await computeBill(year, month, period);
+      billRows = result.billRows;
+      noUsage = result.hasUsage === false;
+    }
+
+    const teams = groupByTeam(billRows);
+    const grandTotal = { seatCost: 0, overageCost: 0, totalCost: 0, totalMembers: 0 };
+    for (const t of teams) {
+      grandTotal.seatCost = Math.round((grandTotal.seatCost + t.seatCost) * 10000) / 10000;
+      grandTotal.overageCost = Math.round((grandTotal.overageCost + t.overageCost) * 10000) / 10000;
+      grandTotal.totalCost = Math.round((grandTotal.totalCost + t.totalCost) * 10000) / 10000;
+      grandTotal.totalMembers += t.members;
+    }
+
+    return {
+      ok: true, yearMonth: ym, status: period.status,
+      message: noUsage ? "该月暂无 Copilot 使用数据" : period.message,
+      dateRange: { start: period.start, end: period.end },
+      teams, grandTotal,
+    };
+  }
+
   /* ── Route ── */
 
   router.get("/api/bill", async (req, res) => {
@@ -241,85 +309,8 @@ module.exports = function createBillRouter({ usageStore, teamCache, userMappingS
       const now = new Date();
       const year = Number(req.query.year) || now.getUTCFullYear();
       const month = Number(req.query.month) || (now.getUTCMonth() + 1);
-
-      if (month < 1 || month > 12) throw new Error("无效的月份");
-      if (year < 2020 || year > 2100) throw new Error("无效的年份");
-
-      const ym = yearMonthKey(year, month);
-      const period = resolveBillPeriod(year, month);
-
-      // Aggregating status — return immediately with message
-      if (period.status === "aggregating") {
-        return res.json({
-          ok: true,
-          yearMonth: ym,
-          status: period.status,
-          message: period.message,
-          dateRange: null,
-          teams: [],
-          grandTotal: { seatCost: 0, overageCost: 0, totalCost: 0, totalMembers: 0 },
-        });
-      }
-
-      // Check SQLite cache
-      let billRows;
-      let noUsage = false;
-      const cached = usageStore.hasBill(ym);
-
-      if (cached && period.status === "complete") {
-        // Historical month with cached data — use directly
-        billRows = usageStore.getBill(ym);
-        // Self-heal adName for legacy rows written before the ad_name column
-        // migration (schema v2.5). Falls back to current user mapping so the
-        // user sees AD names without needing a force-refresh.
-        const missingAdLogins = billRows.filter((r) => !r.adName).map((r) => r.login);
-        const adLookup = userMappingService.buildLookup(missingAdLogins);
-        for (const row of billRows) {
-          if (!row.adName) {
-            const mapped = adLookup[row.login.toLowerCase()] || null;
-            if (mapped) row.adName = mapped.adName;
-          }
-        }
-        // Guard: detect stale "empty-month" cache written before the no-usage
-        // fix (all rows had seat cost but zero requests). Recompute in that
-        // case so the cleanup path runs.
-        const totalRequests = billRows.reduce((s, r) => s + (r.requests || 0), 0);
-        if (billRows.length > 0 && totalRequests === 0) {
-          logger.info({ yearMonth: ym }, "Cached bill has zero usage, recomputing");
-          const result = await computeBill(year, month, period);
-          billRows = result.billRows;
-          noUsage = result.hasUsage === false;
-        }
-      } else {
-        // Current month or no cache — compute
-        const result = await computeBill(year, month, period);
-        billRows = result.billRows;
-        noUsage = result.hasUsage === false;
-      }
-
-      const teams = groupByTeam(billRows);
-      const grandTotal = {
-        seatCost: 0,
-        overageCost: 0,
-        totalCost: 0,
-        totalMembers: 0,
-      };
-      for (const t of teams) {
-        grandTotal.seatCost = Math.round((grandTotal.seatCost + t.seatCost) * 10000) / 10000;
-        grandTotal.overageCost = Math.round((grandTotal.overageCost + t.overageCost) * 10000) / 10000;
-        grandTotal.totalCost = Math.round((grandTotal.totalCost + t.totalCost) * 10000) / 10000;
-        grandTotal.totalMembers += t.members;
-      }
-
-      res.json({
-        ok: true,
-        yearMonth: ym,
-        status: period.status,
-        message: noUsage ? "该月暂无 Copilot 使用数据" : period.message,
-        dateRange: { start: period.start, end: period.end },
-        teams,
-        grandTotal,
-      });
+      const result = await getMonthlyBillTeams(year, month);
+      res.json(result);
     } catch (error) {
       writeError(res, error);
     }
@@ -546,5 +537,5 @@ module.exports = function createBillRouter({ usageStore, teamCache, userMappingS
     }
   });
 
-  return router;
+  return { router, getMonthlyBillTeams };
 };

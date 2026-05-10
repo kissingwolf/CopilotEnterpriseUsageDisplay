@@ -2,6 +2,7 @@
  * Cost Center routes
  */
 const express = require("express");
+const logger = require("../lib/logger");
 const { PLAN_CONFIG } = require("../lib/billing-config");
 const { githubGetJson, githubPostJson, githubDeleteJson } = require("../lib/github-api");
 const { toNumber, writeError, buildEndpoint } = require("../lib/helpers");
@@ -13,19 +14,6 @@ function getBillingYearMonthForCostCenter() {
     year: requiredEnv("BILLING_YEAR") || String(now.getUTCFullYear()),
     month: requiredEnv("BILLING_MONTH") || String(now.getUTCMonth() + 1),
   };
-}
-
-function summarizeUsageItemsAmount(payload, allowedSkus) {
-  const usageItems = Array.isArray(payload?.usageItems) ? payload.usageItems : [];
-  let spent = 0;
-  for (const item of usageItems) {
-    if (allowedSkus && allowedSkus.size > 0) {
-      const itemSku = String(item?.sku || "").trim().toLowerCase();
-      if (!itemSku || !allowedSkus.has(itemSku)) continue;
-    }
-    spent += toNumber(item.netAmount) || toNumber(item.grossAmount) || toNumber(item.amount);
-  }
-  return Math.round(spent * 10000) / 10000;
 }
 
 async function fetchCostCenterBudgetMap(enterprise) {
@@ -61,30 +49,25 @@ async function fetchCostCenterBudgetMap(enterprise) {
   return byName;
 }
 
-async function fetchCostCenterSpentMap(enterprise, costCenters, budgetByName) {
+/**
+ * Build Map<teamNameLowerCase, overageCost> from billpage's monthly bill,
+ * so cost-center "spent" aligns with the "套餐外附加费 (USD)" column.
+ * Returns an empty Map (never null) on any failure.
+ */
+async function fetchCostCenterSpentMap(getMonthlyBillTeams) {
   const byName = new Map();
-  if (!Array.isArray(costCenters) || costCenters.length === 0) return byName;
+  if (typeof getMonthlyBillTeams !== "function") return byName;
   const { year, month } = getBillingYearMonthForCostCenter();
-  const chunkSize = 6;
-  for (let i = 0; i < costCenters.length; i += chunkSize) {
-    const chunk = costCenters.slice(i, i + chunkSize);
-    await Promise.all(chunk.map(async (cc) => {
-      const ccId = cc?.id;
-      const ccName = String(cc?.name || "").trim();
-      if (!ccId || !ccName) return;
-      const budgetInfo = budgetByName instanceof Map ? budgetByName.get(ccName.toLowerCase()) : null;
-      const allowedSkus = budgetInfo?.skus instanceof Set ? budgetInfo.skus : new Set();
-      try {
-        const params = new URLSearchParams();
-        params.set("year", String(year));
-        params.set("month", String(month));
-        params.set("cost_center_id", String(ccId));
-        const usage = await githubGetJson(
-          `/enterprises/${encodeURIComponent(enterprise)}/settings/billing/usage/summary`, params
-        );
-        byName.set(ccName.toLowerCase(), summarizeUsageItemsAmount(usage, allowedSkus));
-      } catch { byName.set(ccName.toLowerCase(), null); }
-    }));
+  try {
+    const result = await getMonthlyBillTeams(Number(year), Number(month));
+    const teams = Array.isArray(result?.teams) ? result.teams : [];
+    for (const t of teams) {
+      const key = String(t?.team || "").trim().toLowerCase();
+      if (!key) continue;
+      byName.set(key, toNumber(t?.overageCost));
+    }
+  } catch (err) {
+    logger.warn({ err: err && err.message }, "fetchCostCenterSpentMap: failed to load monthly bill");
   }
   return byName;
 }
@@ -107,7 +90,7 @@ async function fetchEnterpriseTeamMembers(enterprise, teamId) {
   return members;
 }
 
-module.exports = function createCostCenterRouter({ userMappingService } = {}) {
+module.exports = function createCostCenterRouter({ userMappingService, getMonthlyBillTeams } = {}) {
   // Non-destructive adName enrichment for user-type resources.
   const enrichResourcesWithAdName = (resources, lookup) => {
     if (!Array.isArray(resources)) return [];
@@ -131,7 +114,7 @@ module.exports = function createCostCenterRouter({ userMappingService } = {}) {
       const data = await githubGetJson(`/enterprises/${encodeURIComponent(endpoint.enterprise)}/settings/billing/cost-centers`, params);
       const costCenters = Array.isArray(data?.costCenters) ? data.costCenters : [];
       const budgetByName = await fetchCostCenterBudgetMap(endpoint.enterprise);
-      const spentByName = await fetchCostCenterSpentMap(endpoint.enterprise, costCenters, budgetByName);
+      const spentByName = await fetchCostCenterSpentMap(getMonthlyBillTeams);
       const seatBaseCost = PLAN_CONFIG.business.baseCost;
 
       const normalized = costCenters.map((cc) => {
@@ -164,7 +147,7 @@ module.exports = function createCostCenterRouter({ userMappingService } = {}) {
       if (!found) { res.status(404).json({ ok: false, message: `未找到名为 "${targetName}" 的 cost center。` }); return; }
 
       const budgetByName = await fetchCostCenterBudgetMap(endpoint.enterprise);
-      const spentByName = await fetchCostCenterSpentMap(endpoint.enterprise, [found], budgetByName);
+      const spentByName = await fetchCostCenterSpentMap(getMonthlyBillTeams);
       const nameKey = String(found.name || "").trim().toLowerCase();
       const budgetInfo = budgetByName.get(nameKey) || null;
       const seatBaseCost = PLAN_CONFIG.business.baseCost;

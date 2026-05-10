@@ -486,6 +486,12 @@ sudo systemctl reload nginx
 
 ## 更新日志
 
+### v2.8 — Cost Center 套餐外预算与 Team 月度账单口径对齐
+
+- **预算弹窗 spent 与 billpage 完全一致** — `routes/costcenter.js` 的 `spentAmount` 计算由调用 GitHub `usage/summary` 改为复用 Team 月度账单口径，直接读取同月 Team 维度的 `overageCost`（"套餐外附加费"）并按 Team 名匹配 Cost Center 名称，确保首页“预算和费用”弹窗分子与 `/billpage` 页面显示一致。
+- **抽取可复用月账单聚合入口** — `routes/bill.js` 新增 `getMonthlyBillTeams(year, month)`，统一封装缓存命中、历史月读取、当前月重算与汇总逻辑；`GET /api/bill` 改为调用该方法返回响应，避免多处重复实现产生口径漂移。
+- **路由依赖注入增强** — `server.js` 调整路由挂载顺序并将 `getMonthlyBillTeams` 注入 `routes/costcenter.js`，保证 Cost Center 与 Team 月账单共享同一份 SQLite 缓存与同一套周期逻辑。
+
 ### v2.7 — 首页首屏秒开 + 历史月周期聚合修复
 
 - **首页先渲染服务端缓存再后台刷新** — `public/script.js` 的 `initLoad()` 在 localStorage 缓存未命中时，先 `GET /api/usage` 读取服务端内存中上一次的结果并立即渲染，然后后台执行 `POST /api/usage/refresh`。用户打开页面时先看到上次数据（即使是旧的），而非等待 4–10 秒骨架屏；新数据加载完成后无感知替换。

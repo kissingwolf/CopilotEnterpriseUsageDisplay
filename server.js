@@ -92,10 +92,11 @@ const usageRouter = require("./routes/usage")(deps);
 app.use(usageRouter);
 app.use(require("./routes/billing")(deps));
 app.use(require("./routes/teams")(deps));
-app.use(require("./routes/costcenter")(deps));
+const billModule = require("./routes/bill")({ ...deps, usageRouter });
+app.use(require("./routes/costcenter")({ ...deps, getMonthlyBillTeams: billModule.getMonthlyBillTeams }));
 app.use(require("./routes/analytics")(deps));
 app.use(require("./routes/user-mapping")(deps));
-app.use(require("./routes/bill")({ ...deps, usageRouter }));
+app.use(billModule.router);
 
 /* ── Health check endpoint ── */
 app.get("/api/health", (_req, res) => {
