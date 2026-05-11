@@ -1184,6 +1184,67 @@ tbody tr:hover {
   max-width: 260px;
 }
 
+/* ── Activity pane ── */
+.activity-layout {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+.activity-chart-container {
+  min-height: 360px;
+  max-width: 720px;
+  margin: 0 auto;
+  width: 100%;
+}
+
+.activity-user-list {
+  padding: 0 24px 24px;
+}
+
+.activity-user-list.hidden {
+  display: none;
+}
+
+.activity-list-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ink);
+  padding: 12px 0 8px;
+  border-top: 1px solid var(--line);
+}
+
+.activity-list-empty {
+  color: var(--muted);
+  font-size: 13px;
+  padding: 8px 0;
+}
+
+.activity-list-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.activity-list-table th {
+  text-align: left;
+  padding: 6px 10px;
+  border-bottom: 2px solid var(--line);
+  color: var(--muted);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.activity-list-table td {
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--line);
+  color: var(--ink);
+}
+
+.activity-list-table tr:last-child td {
+  border-bottom: none;
+}
+
 /* ── Bill page ── */
 .month-picker {
   padding: 7px 14px;

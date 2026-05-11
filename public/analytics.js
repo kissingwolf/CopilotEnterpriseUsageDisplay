@@ -14,13 +14,18 @@
   var topPane = document.getElementById("topPane");
   var teamPane = document.getElementById("teamPane");
   var teamSelect = document.getElementById("teamSelect");
+  var activityPane = document.getElementById("activityPane");
+  var activityTeamSelect = document.getElementById("activityTeamSelect");
 
   /* ── State ── */
   var currentRange = 30;
   var trendChart = null;
   var topChart = null;
   var teamChart = null;
+  var activityChart = null;
   var teamListLoaded = false;
+  var activityRawMembers = null;
+  var activityCurrentBucket = null;
   var latestMetaText = "";
 
   /* ── Local helpers ── */
@@ -302,6 +307,7 @@
       trendPane.classList.toggle("active", tab.dataset.pane === "trend");
       topPane.classList.toggle("active", tab.dataset.pane === "top");
       teamPane.classList.toggle("active", tab.dataset.pane === "team");
+      activityPane.classList.toggle("active", tab.dataset.pane === "activity");
       // Resize visible chart so it measures the now-visible container correctly
       if (tab.dataset.pane === "trend" && trendChart) trendChart.resize();
       if (tab.dataset.pane === "top" && topChart) topChart.resize();
@@ -309,7 +315,158 @@
         loadTeamList();
         refreshTeamChart();
       }
+      if (tab.dataset.pane === "activity") {
+        loadActivityData();
+      }
     });
+  });
+
+  /* ── User activity classification (mirrors lib/helpers.js:classifyUserActivity) ── */
+  var BUCKET_NAMES = ["1~5日不活跃", "6~10日不活跃", "10日以上不活跃", "注册后未活跃"];
+  var BUCKET_COLORS = ["#00704a", "#f1c232", "#b42318", "#9e9e9e"];
+
+  function classifyUserActivity(members, nowMs) {
+    var MS_PER_DAY = 24 * 60 * 60 * 1000;
+    var buckets = { "1~5日不活跃": [], "6~10日不活跃": [], "10日以上不活跃": [], "注册后未活跃": [] };
+    for (var i = 0; i < members.length; i++) {
+      var m = members[i];
+      var displayName = (m.adName && m.adName.trim()) ? m.adName : m.login;
+      var entry = { displayName: displayName, team: m.team || "--", lastActivityAt: m.lastActivityAt };
+      if (!m.lastActivityAt) {
+        buckets["注册后未活跃"].push(entry);
+        continue;
+      }
+      var daysInactive = Math.floor((nowMs - new Date(m.lastActivityAt).getTime()) / MS_PER_DAY);
+      if (daysInactive <= 5) {
+        buckets["1~5日不活跃"].push(entry);
+      } else if (daysInactive <= 10) {
+        buckets["6~10日不活跃"].push(entry);
+      } else {
+        buckets["10日以上不活跃"].push(entry);
+      }
+    }
+    return buckets;
+  }
+
+  /* ── Render activity pie chart ── */
+  function renderActivityChart(members) {
+    var nowMs = Date.now();
+    var buckets = classifyUserActivity(members, nowMs);
+    var counts = BUCKET_NAMES.map(function (n) { return buckets[n].length; });
+
+    var ctx = document.getElementById("activityChart").getContext("2d");
+    if (activityChart) activityChart.destroy();
+
+    activityChart = new Chart(ctx, {
+      type: "doughnut",
+      data: {
+        labels: BUCKET_NAMES,
+        datasets: [{
+          data: counts,
+          backgroundColor: BUCKET_COLORS,
+          borderWidth: 2,
+          borderColor: "#fff",
+        }],
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {
+          legend: { position: "right", labels: { font: { size: 13 }, padding: 16 } },
+          tooltip: {
+            callbacks: {
+              label: function (ctx) {
+                var label = ctx.label || "";
+                var val = ctx.parsed;
+                var total = ctx.dataset.data.reduce(function (a, b) { return a + b; }, 0);
+                var pct = total > 0 ? Math.round(val / total * 100) : 0;
+                return label + ": " + val + " 人 (" + pct + "%)";
+              },
+            },
+          },
+        },
+        onClick: function (_evt, elements) {
+          if (!elements || elements.length === 0) return;
+          var idx = elements[0].index;
+          var bucketName = BUCKET_NAMES[idx];
+          var userList = document.getElementById("activityUserList");
+          // Toggle: click same bucket → collapse
+          if (activityCurrentBucket === bucketName && !userList.classList.contains("hidden")) {
+            userList.classList.add("hidden");
+            activityCurrentBucket = null;
+            return;
+          }
+          activityCurrentBucket = bucketName;
+          renderActivityUserList(bucketName, buckets[bucketName]);
+        },
+      },
+    });
+
+    // Reset user list when chart re-renders
+    document.getElementById("activityUserList").classList.add("hidden");
+    activityCurrentBucket = null;
+  }
+
+  /* ── Render user list below pie chart ── */
+  function renderActivityUserList(bucketName, users) {
+    var container = document.getElementById("activityUserList");
+    container.classList.remove("hidden");
+
+    var html = '<div class="activity-list-title">' + C.escapeHtml(bucketName) + ' — 共 ' + users.length + ' 人</div>';
+    if (users.length === 0) {
+      html += '<p class="activity-list-empty">此分类暂无用户</p>';
+    } else {
+      html += '<table class="activity-list-table"><thead><tr><th>用户名</th><th>Team</th><th>最后活跃</th></tr></thead><tbody>';
+      users.forEach(function (u) {
+        var lastActive = u.lastActivityAt ? new Date(u.lastActivityAt).toLocaleString("zh-CN", { hour12: false }) : "--";
+        html += '<tr><td>' + C.escapeHtml(u.displayName) + '</td><td>' + C.escapeHtml(u.team) + '</td><td>' + C.escapeHtml(lastActive) + '</td></tr>';
+      });
+      html += '</tbody></table>';
+    }
+    container.innerHTML = html;
+  }
+
+  /* ── Load activity data (call /api/user/members, populate Team select, render chart) ── */
+  function loadActivityData() {
+    if (activityRawMembers !== null) {
+      // Already loaded; just re-render with current team filter
+      renderActivityChart(filteredActivityMembers());
+      return;
+    }
+    C.apiFetchJson("/api/user/members", {}, "获取用户成员数据失败")
+      .then(function (data) {
+        activityRawMembers = data.members || [];
+        // Populate Team dropdown (unique, sorted)
+        var teams = [];
+        var seen = {};
+        activityRawMembers.forEach(function (m) {
+          var t = m.team || "";
+          if (t && t !== "-" && !seen[t]) { seen[t] = true; teams.push(t); }
+        });
+        teams.sort();
+        // Clear existing options except "全部 Team"
+        while (activityTeamSelect.options.length > 1) activityTeamSelect.remove(1);
+        teams.forEach(function (name) {
+          var opt = document.createElement("option");
+          opt.value = name;
+          opt.textContent = name;
+          activityTeamSelect.appendChild(opt);
+        });
+        renderActivityChart(filteredActivityMembers());
+      })
+      .catch(function (err) { setError(err instanceof Error ? err.message : String(err)); });
+  }
+
+  function filteredActivityMembers() {
+    var team = activityTeamSelect.value;
+    if (!team) return activityRawMembers;
+    return (activityRawMembers || []).filter(function (m) { return (m.team || "") === team; });
+  }
+
+  activityTeamSelect.addEventListener("change", function () {
+    if (activityRawMembers !== null) {
+      renderActivityChart(filteredActivityMembers());
+    }
   });
 
   /* ── Data freshness timer ── */
