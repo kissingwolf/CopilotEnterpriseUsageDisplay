@@ -31,6 +31,7 @@
 - **用户映射管理** — 上传 Excel（`.xlsx` / `.xls`）映射表，将 GitHub 用户名关联到展示名称
 - **自定义名称显示** — 已映射用户在首页用量排行中优先显示自定义名称，未映射用户仍显示 GitHub 登录名
 - **映射状态可视化** — 用户映射管理页中每行显示 已映射/未映射 标签，支持一键刷新成员列表
+- **用户映射导出 Excel** — 用户映射管理页提供"导出 Excel"按钮，一键将全量 Copilot 席位成员（含 Team、AD 用户名、AD 邮箱、计划、最后活跃、映射状态共 7 列）导出为 `.xlsx` 文件
 - **自动热重载映射** — 映射文件变更时，内存中的数据自动同步，无需重启服务
 - **三层缓存架构** — 内存缓存（5 分钟） → SQLite 持久缓存（90 天） → GitHub API，大幅减少 API 调用
 - **ETag 条件请求** — 数据未变化时返回 304 Not Modified，不消耗 API 配额
@@ -127,6 +128,7 @@ data/
 | `GET` | `/api/analytics/team-view?range=30[&team=TeamName]` | Team 视角：全选时返回各 Team 人均请求量；传入 team 参数时返回该 Team Top20 成员请求量 |
 | `GET` | `/api/bill?year=2026&month=4` | Team 月度账单（席位费 + 超额费 + 总费用，按 Team 分组） |
 | `GET` | `/api/bill/export?year=2026&month=4` | 导出 Team 月度账单为 Excel 文件（多 Sheet：每 Team 明细 + Total 汇总） |
+| `GET` | `/api/user/members/export` | 导出全量成员映射表为 Excel 文件（7 列：Github用户名、Team、AD用户名、AD邮箱、计划、最后活跃、映射状态） |
 
 > 详细的“强制刷新”与“自动刷新调度器”使用说明见后文《强制刷新与自动刷新》小节。
 
@@ -411,6 +413,7 @@ curl -X POST http://localhost:3000/api/usage/refresh \
 | `POST` | `/user/upload-members` | 上传 Excel 文件，解析并保存映射表 |
 | `POST` | `/user/reload-mapping` | 手动触发映射数据重载 |
 | `GET` | `/api/user/members` | 获取 Copilot 成员列表（含 Team + AD 映射信息） |
+| `GET` | `/api/user/members/export` | 导出全量成员映射表为 Excel 文件（`.xlsx`） |
 | `GET` | `/api/user/info?github=xxx` | 根据 GitHub 用户名查询对应的 AD 信息（供其他页面调用） |
 
 ## Ubuntu 22.04 部署
@@ -485,6 +488,13 @@ sudo systemctl reload nginx
 | Enterprise | 1000 requests | $39 | $0.04/request |
 
 ## 更新日志
+
+### v2.9 — 用户映射管理页导出 Excel
+
+- **"导出 Excel"按钮** — `/user` 页工具栏新增"导出 Excel"按钮，点击即触发全量成员数据下载，无需手动复制表格。
+- **新增导出接口** — `GET /api/user/members/export` 直接查询当前 Copilot 席位数据（绕过前端分页），使用 `exceljs` 在服务端生成并流式返回 `.xlsx` 文件，文件名格式为 `user-mapping-YYYYMMDD.xlsx`。
+- **7 列标准结构** — 导出列与页面表格一致：Github 用户名、Team、AD 用户名、AD 邮箱、计划、最后活跃、映射状态（已映射 / 未映射）；`null` 字段填充为 `--`。
+- **纯函数抽取与单元测试** — 行数据构建逻辑提取为 `lib/helpers.js` 中的 `buildMemberExcelRows(members)` 纯函数，新增 `test/user-mapping.test.js`（5 个用例），全项目测试数量提升至 39 个。
 
 ### v2.8 — Cost Center 套餐外预算与 Team 月度账单口径对齐
 

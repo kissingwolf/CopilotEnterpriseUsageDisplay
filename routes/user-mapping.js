@@ -6,7 +6,7 @@ const path = require("path");
 const fs = require("fs");
 const multer = require("multer");
 const ExcelJS = require("exceljs");
-const { writeError } = require("../lib/helpers");
+const { writeError, buildMemberExcelRows } = require("../lib/helpers");
 const { ensureSeatsData } = require("./seats");
 
 module.exports = function createUserMappingRouter({ userMappingService, usageStore, teamCache }) {
@@ -119,6 +119,51 @@ module.exports = function createUserMappingRouter({ userMappingService, usageSto
         };
       });
       res.json({ ok: true, loadedAt: new Date().toISOString(), total: members.length, mappedCount: members.filter((m) => m.adName !== null).length, members });
+    } catch (error) { writeError(res, error); }
+  });
+
+  /* ── Export members to Excel ── */
+  router.get("/api/user/members/export", async (_req, res) => {
+    try {
+      await ensureSeatsData(teamCache, usageStore);
+      const seats = teamCache.seatsRaw;
+      const seatLookup = userMappingService.buildLookup(seats.map((s) => s.login));
+      const members = seats.map((seat) => {
+        const mapped = seatLookup[seat.login.toLowerCase()] || null;
+        return {
+          login: seat.login,
+          team: (teamCache.userTeamMap[seat.login] || []).join(", ") || "-",
+          adName: mapped ? mapped.adName : null,
+          adMail: mapped ? mapped.adMail : null,
+          planType: seat.planType || null,
+          lastActivityAt: seat.lastActivityAt || null,
+        };
+      });
+
+      const rows = buildMemberExcelRows(members);
+      const workbook = new ExcelJS.Workbook();
+      const sheet = workbook.addWorksheet("用户映射");
+      // Set column widths based on content type
+      sheet.columns = [
+        { width: 25 }, // Github 用户名
+        { width: 30 }, // Team
+        { width: 25 }, // AD 用户名
+        { width: 35 }, // AD 邮箱
+        { width: 15 }, // 计划
+        { width: 22 }, // 最后活跃
+        { width: 12 }, // 映射状态
+      ];
+      for (const row of rows) {
+        sheet.addRow(row);
+      }
+      // Bold the header row
+      sheet.getRow(1).font = { bold: true };
+
+      const dateStr = new Date().toISOString().slice(0, 10).replace(/-/g, "");
+      res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+      res.setHeader("Content-Disposition", `attachment; filename="user-mapping-${dateStr}.xlsx"`);
+      await workbook.xlsx.write(res);
+      res.end();
     } catch (error) { writeError(res, error); }
   });
 

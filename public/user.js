@@ -16,6 +16,7 @@
   var uploadStatus = document.getElementById('uploadStatus');
   var reloadMappingBtn = document.getElementById('reloadMappingBtn');
   var reloadMembersBtn = document.getElementById('reloadMembersBtn');
+  var exportBtn = document.getElementById('exportBtn');
   var mappingMeta = document.getElementById('mappingMeta');
   var errorBox = document.getElementById('error');
   var membersTable = document.getElementById('membersTable');
@@ -204,6 +205,10 @@
 
   uploadBtn.addEventListener('click', function () {
     fileInput.click();
+  });
+
+  exportBtn.addEventListener('click', function () {
+    window.location.href = '/api/user/members/export';
   });
 
   fileInput.addEventListener('change', function () {
