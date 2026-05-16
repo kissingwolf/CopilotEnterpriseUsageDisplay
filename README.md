@@ -492,6 +492,13 @@ sudo systemctl reload nginx
 
 ## 更新日志
 
+### v3.1 — Billpage 套餐外附加费改为直接读取 GitHub spent
+
+- **`/billpage` 套餐外附加费改为 direct spent** — `routes/bill.js` 的 Team 月账单现在优先从 GitHub `settings/billing/usage/summary` 按 `cost_center_id` 直接读取 `premium_request` 对应的 `netAmount`，不再用按用户请求量和配额反推 `overageCost` 作为主口径。
+- **Cost Center / Billpage 口径继续对齐** — 首页 `Cost Center` 弹窗仍复用 `getMonthlyBillTeams()`，因此 `spent` 会跟 `/billpage` 的团队级套餐外附加费保持一致。
+- **保留用户明细展示** — 个人展开行仍展示用户层面的请求量与推导值，团队汇总与导出表中的套餐外附加费以 GitHub 直读值为准。
+- **脱敏与安全审计注意事项** — 调试与审计时禁止记录 Token、Authorization Header、告警接收人邮箱/用户名等敏感字段；仅输出状态码、聚合金额与必要主键（如 `cost_center_id`）用于追踪。建议沿用现有日志脱敏策略并在审计日志中保留最小必要字段集。
+
 ### v3.0 — 数据分析页用户活跃性 Tab
 
 - **"用户活跃性"Tab** — 数据分析页（`/analytics`）新增第 4 个 Tab，呈现全量 Copilot 席位用户的不活跃分布。

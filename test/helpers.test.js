@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-const { toNumber, pickUser } = require("../lib/helpers");
+const { toNumber, pickUser, buildQueryParams } = require("../lib/helpers");
 
 describe("toNumber", () => {
   it("returns the number for a number input", () => {
@@ -61,5 +61,14 @@ describe("pickUser", () => {
 
   it("prioritizes user over login", () => {
     expect(pickUser({ user: "first", login: "second" })).toBe("first");
+  });
+});
+
+describe("buildQueryParams", () => {
+  it("passes through cost_center_id for cost-center scoped queries", () => {
+    const params = buildQueryParams({ year: 2026, month: 5, cost_center_id: "cc-123" });
+    expect(params.get("year")).toBe("2026");
+    expect(params.get("month")).toBe("5");
+    expect(params.get("cost_center_id")).toBe("cc-123");
   });
 });

@@ -10,7 +10,44 @@ const { toNumber, pickUser, writeError, buildQueryParams, buildEndpoint } = requ
 const { enumerateDays } = require("../lib/date-utils");
 const { ensureSeatsData } = require("./seats");
 
-module.exports = function createBillRouter({ usageStore, teamCache, userMappingService, usageRouter }) {
+function groupByTeam(billRows, directSpentMap = null) {
+  const teamMap = new Map();
+  for (const row of billRows) {
+    if (!teamMap.has(row.team)) {
+      teamMap.set(row.team, { team: row.team, members: 0, seatCost: 0, overageCost: 0, totalCost: 0, users: [] });
+    }
+    const t = teamMap.get(row.team);
+    t.members += 1;
+    t.seatCost = Math.round((t.seatCost + row.seatCost) * 10000) / 10000;
+    t.overageCost = Math.round((t.overageCost + row.overageCost) * 10000) / 10000;
+    t.totalCost = Math.round((t.totalCost + row.totalCost) * 10000) / 10000;
+    t.users.push({
+      login: row.login,
+      adName: row.adName || null,
+      planType: row.planType,
+      seatCost: row.seatCost,
+      requests: row.requests,
+      quota: row.quota,
+      overageRequests: row.overageRequests,
+      overageCost: row.overageCost,
+      totalCost: row.totalCost,
+    });
+  }
+
+  // Sort teams by name, users within team by login
+  const teams = Array.from(teamMap.values()).sort((a, b) => a.team.localeCompare(b.team));
+  for (const t of teams) {
+    const directSpent = directSpentMap ? directSpentMap.get(String(t.team || "").trim().toLowerCase()) : null;
+    if (Number.isFinite(directSpent)) {
+      t.overageCost = Math.round(directSpent * 10000) / 10000;
+      t.totalCost = Math.round((t.seatCost + t.overageCost) * 10000) / 10000;
+    }
+    t.users.sort((a, b) => a.login.localeCompare(b.login));
+  }
+  return teams;
+}
+
+function createBillRouter({ usageStore, teamCache, userMappingService, usageRouter }) {
   const router = express.Router();
 
   /* ── helpers ── */
@@ -82,6 +119,70 @@ module.exports = function createBillRouter({ usageStore, teamCache, userMappingS
       byUser.set(user, (byUser.get(user) || 0) + requests);
     }
     return byUser;
+  }
+
+  function isCopilotPremiumRequestItem(item) {
+    const sku = String(item?.sku || "").toLowerCase();
+    const product = String(item?.product || "").toLowerCase();
+    return /premium[_ ]request/.test(sku) || (product === "copilot" && /premium/.test(sku));
+  }
+
+  async function fetchDirectCostCenterSpentMap(year, month, teamNames) {
+    const byTeam = new Map();
+    const endpoint = buildEndpoint();
+    if (endpoint.kind !== "enterprise") return byTeam;
+
+    const nameSet = new Set(
+      (Array.isArray(teamNames) ? teamNames : [])
+        .map((name) => String(name || "").trim())
+        .filter(Boolean)
+    );
+    if (nameSet.size === 0) return byTeam;
+
+    let costCentersRaw;
+    try {
+      costCentersRaw = await githubGetJson(
+        `/enterprises/${encodeURIComponent(endpoint.enterprise)}/settings/billing/cost-centers`
+      );
+    } catch (err) {
+      logger.warn({ err: err && err.message }, "fetchDirectCostCenterSpentMap: failed to load cost centers");
+      return byTeam;
+    }
+
+    const costCenters = Array.isArray(costCentersRaw?.costCenters) ? costCentersRaw.costCenters : [];
+    const centerIdByName = new Map();
+    for (const center of costCenters) {
+      const name = String(center?.name || "").trim();
+      const id = String(center?.id || "").trim();
+      if (!name || !id) continue;
+      centerIdByName.set(name.toLowerCase(), id);
+    }
+
+    await Promise.all(Array.from(nameSet).map(async (teamName) => {
+      const centerId = centerIdByName.get(teamName.toLowerCase());
+      if (!centerId) return;
+
+      try {
+        const params = buildQueryParams({
+          year,
+          month,
+          cost_center_id: centerId,
+        });
+        const data = await githubGetJson(
+          `/enterprises/${encodeURIComponent(endpoint.enterprise)}/settings/billing/usage/summary`,
+          params
+        );
+        const items = Array.isArray(data?.usageItems) ? data.usageItems : [];
+        const spent = items
+          .filter(isCopilotPremiumRequestItem)
+          .reduce((sum, item) => sum + toNumber(item.netAmount), 0);
+        byTeam.set(teamName.toLowerCase(), Math.round(spent * 10000) / 10000);
+      } catch (err) {
+        logger.warn({ team: teamName, err: err && err.message }, "fetchDirectCostCenterSpentMap: failed to load usage summary");
+      }
+    }));
+
+    return byTeam;
   }
 
   /**
@@ -200,41 +301,6 @@ module.exports = function createBillRouter({ usageStore, teamCache, userMappingS
   }
 
   /**
-   * Group flat bill rows into team-level aggregation.
-   */
-  function groupByTeam(billRows) {
-    const teamMap = new Map();
-    for (const row of billRows) {
-      if (!teamMap.has(row.team)) {
-        teamMap.set(row.team, { team: row.team, members: 0, seatCost: 0, overageCost: 0, totalCost: 0, users: [] });
-      }
-      const t = teamMap.get(row.team);
-      t.members += 1;
-      t.seatCost = Math.round((t.seatCost + row.seatCost) * 10000) / 10000;
-      t.overageCost = Math.round((t.overageCost + row.overageCost) * 10000) / 10000;
-      t.totalCost = Math.round((t.totalCost + row.totalCost) * 10000) / 10000;
-      t.users.push({
-        login: row.login,
-        adName: row.adName || null,
-        planType: row.planType,
-        seatCost: row.seatCost,
-        requests: row.requests,
-        quota: row.quota,
-        overageRequests: row.overageRequests,
-        overageCost: row.overageCost,
-        totalCost: row.totalCost,
-      });
-    }
-
-    // Sort teams by name, users within team by login
-    const teams = Array.from(teamMap.values()).sort((a, b) => a.team.localeCompare(b.team));
-    for (const t of teams) {
-      t.users.sort((a, b) => a.login.localeCompare(b.login));
-    }
-    return teams;
-  }
-
-  /**
    * Reusable monthly bill computation, mirroring GET /api/bill but without
    * the HTTP layer. Used by other routers (e.g. cost-center) to align with
    * billpage's "套餐外附加费" (overageCost) numbers.
@@ -285,7 +351,8 @@ module.exports = function createBillRouter({ usageStore, teamCache, userMappingS
       noUsage = result.hasUsage === false;
     }
 
-    const teams = groupByTeam(billRows);
+    const directSpentMap = await fetchDirectCostCenterSpentMap(year, month, billRows.map((row) => row.team));
+    const teams = groupByTeam(billRows, directSpentMap);
     const grandTotal = { seatCost: 0, overageCost: 0, totalCost: 0, totalMembers: 0 };
     for (const t of teams) {
       grandTotal.seatCost = Math.round((grandTotal.seatCost + t.seatCost) * 10000) / 10000;
@@ -380,7 +447,8 @@ module.exports = function createBillRouter({ usageStore, teamCache, userMappingS
 
       // 3. Recompute the monthly bill from the fresh daily rows.
       const { billRows, hasUsage } = await computeBill(year, month, period);
-      const teams = groupByTeam(billRows);
+      const directSpentMap = await fetchDirectCostCenterSpentMap(year, month, billRows.map((row) => row.team));
+      const teams = groupByTeam(billRows, directSpentMap);
       const grandTotal = { seatCost: 0, overageCost: 0, totalCost: 0, totalMembers: 0 };
       for (const t of teams) {
         grandTotal.seatCost = Math.round((grandTotal.seatCost + t.seatCost) * 10000) / 10000;
@@ -452,7 +520,8 @@ module.exports = function createBillRouter({ usageStore, teamCache, userMappingS
         return res.status(400).json({ ok: false, error: "该月暂无账单数据可导出" });
       }
 
-      const teams = groupByTeam(billRows);
+      const directSpentMap = await fetchDirectCostCenterSpentMap(year, month, billRows.map((row) => row.team));
+      const teams = groupByTeam(billRows, directSpentMap);
 
       // Build Excel workbook
       const workbook = new ExcelJS.Workbook();
@@ -538,4 +607,8 @@ module.exports = function createBillRouter({ usageStore, teamCache, userMappingS
   });
 
   return { router, getMonthlyBillTeams };
-};
+}
+
+createBillRouter.__testables = { groupByTeam };
+
+module.exports = createBillRouter;
