@@ -16,6 +16,8 @@
   var teamSelect = document.getElementById("teamSelect");
   var activityPane = document.getElementById("activityPane");
   var activityTeamSelect = document.getElementById("activityTeamSelect");
+  var quotaPane = document.getElementById("quotaPane");
+  var quotaTeamSelect = document.getElementById("quotaTeamSelect");
 
   /* ── State ── */
   var currentRange = 30;
@@ -23,9 +25,12 @@
   var topChart = null;
   var teamChart = null;
   var activityChart = null;
+  var quotaChart = null;
   var teamListLoaded = false;
   var activityRawMembers = null;
   var activityCurrentBucket = null;
+  var quotaRawUsers = null;
+  var quotaCurrentBucket = null;
   var latestMetaText = "";
 
   /* ── Local helpers ── */
@@ -272,6 +277,10 @@
       if (top.topUsers && top.topUsers.length > 0) renderTopChart(top.topUsers);
       // Refresh team chart if its pane is active; otherwise it will load on first tab switch
       if (teamPane.classList.contains("active")) refreshTeamChart();
+      if (quotaPane.classList.contains("active")) {
+        quotaRawUsers = null;
+        loadQuotaUsageData();
+      }
 
       var now = new Date();
       var loadTimeStr = now.toLocaleString("zh-CN", { hour12: false });
@@ -308,6 +317,7 @@
       topPane.classList.toggle("active", tab.dataset.pane === "top");
       teamPane.classList.toggle("active", tab.dataset.pane === "team");
       activityPane.classList.toggle("active", tab.dataset.pane === "activity");
+      quotaPane.classList.toggle("active", tab.dataset.pane === "quota");
       // Resize visible chart so it measures the now-visible container correctly
       if (tab.dataset.pane === "trend" && trendChart) trendChart.resize();
       if (tab.dataset.pane === "top" && topChart) topChart.resize();
@@ -317,6 +327,9 @@
       }
       if (tab.dataset.pane === "activity") {
         loadActivityData();
+      }
+      if (tab.dataset.pane === "quota") {
+        loadQuotaUsageData();
       }
     });
   });
@@ -466,6 +479,150 @@
   activityTeamSelect.addEventListener("change", function () {
     if (activityRawMembers !== null) {
       renderActivityChart(filteredActivityMembers());
+    }
+  });
+
+  /* ── Quota usage pie chart ── */
+  var QUOTA_BUCKET_NAMES = [
+    "配额使用小于 5%",
+    "配额使用 大于 5% 小于 50%",
+    "配额使用 大于 50% 小于 100%",
+    "配额使用 大于 100% 小于 200%",
+    "配额使用 大于 200%",
+  ];
+  var QUOTA_BUCKET_COLORS = ["#2f855a", "#81b29a", "#f2cc8f", "#e07a5f", "#9d0208"];
+
+  function getQuotaBucketName(user) {
+    var pct = Number(user.usagePercent) || 0;
+    if (pct < 5) return QUOTA_BUCKET_NAMES[0];
+    if (pct < 50) return QUOTA_BUCKET_NAMES[1];
+    if (pct < 100) return QUOTA_BUCKET_NAMES[2];
+    if (pct < 200) return QUOTA_BUCKET_NAMES[3];
+    return QUOTA_BUCKET_NAMES[4];
+  }
+
+  function classifyQuotaUsers(users) {
+    var buckets = {};
+    QUOTA_BUCKET_NAMES.forEach(function (name) { buckets[name] = []; });
+    users.forEach(function (user) {
+      buckets[getQuotaBucketName(user)].push(user);
+    });
+    return buckets;
+  }
+
+  function renderQuotaUsageChart(users) {
+    var buckets = classifyQuotaUsers(users || []);
+    var counts = QUOTA_BUCKET_NAMES.map(function (name) { return buckets[name].length; });
+    var ctx = document.getElementById("quotaChart").getContext("2d");
+    if (quotaChart) quotaChart.destroy();
+
+    quotaChart = new Chart(ctx, {
+      type: "doughnut",
+      data: {
+        labels: QUOTA_BUCKET_NAMES,
+        datasets: [{
+          data: counts,
+          backgroundColor: QUOTA_BUCKET_COLORS,
+          borderWidth: 2,
+          borderColor: "#fff",
+        }],
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {
+          legend: { position: "right", labels: { font: { size: 13 }, padding: 16 } },
+          tooltip: {
+            callbacks: {
+              label: function (ctx) {
+                var label = ctx.label || "";
+                var val = ctx.parsed;
+                var total = ctx.dataset.data.reduce(function (a, b) { return a + b; }, 0);
+                var pct = total > 0 ? Math.round(val / total * 100) : 0;
+                return label + ": " + val + " 人 (" + pct + "%)";
+              },
+            },
+          },
+        },
+        onClick: function (_evt, elements) {
+          if (!elements || elements.length === 0) return;
+          var idx = elements[0].index;
+          var bucketName = QUOTA_BUCKET_NAMES[idx];
+          var userList = document.getElementById("quotaUserList");
+          if (quotaCurrentBucket === bucketName && !userList.classList.contains("hidden")) {
+            userList.classList.add("hidden");
+            quotaCurrentBucket = null;
+            return;
+          }
+          quotaCurrentBucket = bucketName;
+          renderQuotaUserList(bucketName, buckets[bucketName]);
+        },
+      },
+    });
+
+    document.getElementById("quotaUserList").classList.add("hidden");
+    quotaCurrentBucket = null;
+  }
+
+  function renderQuotaUserList(bucketName, users) {
+    var container = document.getElementById("quotaUserList");
+    container.classList.remove("hidden");
+
+    var html = '<div class="activity-list-title">' + C.escapeHtml(bucketName) + ' — 共 ' + users.length + ' 人</div>';
+    if (users.length === 0) {
+      html += '<p class="activity-list-empty">此分类暂无用户</p>';
+    } else {
+      html += '<table class="activity-list-table"><thead><tr><th>用户名</th><th>TEAM</th><th>PREMIUM REQUESTS(%)</th></tr></thead><tbody>';
+      users.forEach(function (u) {
+        var percent = Number(u.usagePercent) || 0;
+        var usageText = formatNumber(u.requests) + ' (' + percent.toFixed(2) + '%)';
+        html += '<tr><td>' + C.escapeHtml(u.user || u.login || "--") + '</td><td>' + C.escapeHtml(u.team || "--") + '</td><td>' + C.escapeHtml(usageText) + '</td></tr>';
+      });
+      html += '</tbody></table>';
+    }
+    container.innerHTML = html;
+  }
+
+  function populateQuotaTeamSelect(users) {
+    var teams = [];
+    var seen = {};
+    (users || []).forEach(function (u) {
+      var t = u.team || "";
+      if (t && t !== "-" && !seen[t]) { seen[t] = true; teams.push(t); }
+    });
+    teams.sort();
+    while (quotaTeamSelect.options.length > 1) quotaTeamSelect.remove(1);
+    teams.forEach(function (name) {
+      var opt = document.createElement("option");
+      opt.value = name;
+      opt.textContent = name;
+      quotaTeamSelect.appendChild(opt);
+    });
+  }
+
+  function loadQuotaUsageData() {
+    if (quotaRawUsers !== null) {
+      renderQuotaUsageChart(filteredQuotaUsers());
+      return;
+    }
+    C.apiFetchJson("/api/analytics/quota-usage", {}, "获取本周期套餐用量失败")
+      .then(function (data) {
+        quotaRawUsers = data.users || [];
+        populateQuotaTeamSelect(quotaRawUsers);
+        renderQuotaUsageChart(filteredQuotaUsers());
+      })
+      .catch(function (err) { setError(err instanceof Error ? err.message : String(err)); });
+  }
+
+  function filteredQuotaUsers() {
+    var team = quotaTeamSelect.value;
+    if (!team) return quotaRawUsers || [];
+    return (quotaRawUsers || []).filter(function (u) { return (u.team || "") === team; });
+  }
+
+  quotaTeamSelect.addEventListener("change", function () {
+    if (quotaRawUsers !== null) {
+      renderQuotaUsageChart(filteredQuotaUsers());
     }
   });
 

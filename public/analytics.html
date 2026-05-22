@@ -37,6 +37,7 @@
           <button class="analytics-tab" data-pane="top">Top用户</button>
           <button class="analytics-tab" data-pane="team">Team视角</button>
           <button class="analytics-tab" data-pane="activity">用户活跃性</button>
+          <button class="analytics-tab" data-pane="quota">本周期套餐用量</button>
         </div>
 
         <div id="trendPane" class="analytics-pane active">
@@ -73,6 +74,21 @@
               <canvas id="activityChart"></canvas>
             </div>
             <div id="activityUserList" class="activity-user-list hidden"></div>
+          </div>
+        </div>
+
+        <div id="quotaPane" class="analytics-pane">
+          <div class="team-pane-header">
+            <span class="team-pane-label">选择 Team：</span>
+            <select id="quotaTeamSelect" class="team-select">
+              <option value="">全部 Team</option>
+            </select>
+          </div>
+          <div class="activity-layout">
+            <div class="chart-container activity-chart-container">
+              <canvas id="quotaChart"></canvas>
+            </div>
+            <div id="quotaUserList" class="activity-user-list hidden"></div>
           </div>
         </div>
       </section>

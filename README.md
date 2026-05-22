@@ -39,6 +39,7 @@
 - **数据分析图表自适应优化** — 图表在"趋势图 / Top用户"页签切换时会自动 resize，避免隐藏容器导致的首屏小图问题；Top 用户数量较多时按条目数自动增高容器，确保用户名标签完整显示
 - **Team 视角图** — 数据分析页新增"Team视角"Tab，右上角下拉框可单选 Team：全选时展示各 Team 人均请求量横向柱状排名；选择某 Team 后展示该 Team 请求量最多的 Top20 成员排名，成员名称遵循映射规则（已映射显示 AD 名，未映射显示 GitHub 登录名），图表高度随条目数自动扩展
 - **用户活跃性分析** — 数据分析页新增"用户活跃性"Tab，饼图按不活跃天数将全量席位用户分为 4 类：1~5日不活跃、6~10日不活跃、10日以上不活跃、注册后未活跃；支持 Team 单选过滤；点击饼图扇形在下方展开用户列表（显示名 / Team / 最后活跃），用户名遵循 AD 映射规则
+- **本周期套餐用量分析** — 数据分析页新增"本周期套餐用量"Tab，按当前自然月统计全量席位用户的 Premium Requests 配额使用率；支持 Team 单选过滤，饼图按 <5%、5%-50%、50%-100%、100%-200%、>=200% 分布展示，点击扇形可展开用户明细（用户名 / Team / Premium Requests 使用率）
 - **Team 月度账单** — 独立页面 `/billpage`，按月查看 Team 维度账单，显示席位费、套餐外附加费、总费用，支持展开查看用户明细，历史数据持久化到 SQLite（仅通过直接访问 URL `/billpage` 进入，主页不展示入口）
 - **按月强制刷新兑底** — `/billpage` 页面提供“强制刷新”按钮：二次确认后会清空选中月份的 SQLite 缓存、逐日回源 GitHub API并重新计算账单，作为缓存错误、空数据或 API 数据延迟场景下的兑底手段
 - **账单导出 Excel** — `/billpage` 页面提供"导出Excel"按钮，将选中月份的 Team 账单导出为 `.xlsx` 文件；每个 Team 生成独立 Sheet（含用户名、Team名、用量信息、套餐外附加费、总费用），另附 "Total" 汇总 Sheet（Team 级聚合统计），使用 `exceljs` 库在服务端生成并流式返回
@@ -129,6 +130,7 @@ data/
 | `GET` | `/api/analytics/top-users?range=30` | Top 20 用户排名（Chart.js 柱状图） |
 | `GET` | `/api/analytics/daily-summary?range=30` | 汇总统计（总量、日均、有数据天数） |
 | `GET` | `/api/analytics/team-view?range=30[&team=TeamName]` | Team 视角：全选时返回各 Team 人均请求量；传入 team 参数时返回该 Team Top20 成员请求量 |
+| `GET` | `/api/analytics/quota-usage` | 本周期套餐用量：按当前自然月统计全量席位用户的配额使用率，并返回 5 档分桶明细 |
 | `GET` | `/api/bill?year=2026&month=4` | Team 月度账单（席位费 + 超额费 + 总费用，按 Team 分组） |
 | `GET` | `/api/bill/export?year=2026&month=4` | 导出 Team 月度账单为 Excel 文件（多 Sheet：每 Team 明细 + Total 汇总） |
 | `GET` | `/api/user/members/export` | 导出全量成员映射表为 Excel 文件（7 列：Github用户名、Team、AD用户名、AD邮箱、计划、最后活跃、映射状态） |

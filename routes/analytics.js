@@ -2,7 +2,9 @@
  * Analytics routes – /api/analytics/trends, top-users, daily-summary
  */
 const express = require("express");
-const { toNumber, pickUser, writeError } = require("../lib/helpers");
+const { PLAN_CONFIG } = require("../lib/billing-config");
+const { toNumber, pickUser, writeError, QUOTA_USAGE_BUCKET_NAMES, classifyQuotaUsage } = require("../lib/helpers");
+const { ensureSeatsData } = require("./seats");
 
 module.exports = function createAnalyticsRouter({ usageStore, userMappingService, teamCache }) {
   const router = express.Router();
@@ -88,6 +90,91 @@ module.exports = function createAnalyticsRouter({ usageStore, userMappingService
       });
 
       res.json({ ok: true, range, topUsers: top });
+    } catch (error) { writeError(res, error); }
+  });
+
+  router.get("/api/analytics/quota-usage", async (_req, res) => {
+    try {
+      await ensureSeatsData(teamCache, usageStore);
+
+      const now = new Date();
+      const startDate = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
+      const startStr = startDate.toISOString().slice(0, 10);
+      const endStr = now.toISOString().slice(0, 10);
+
+      const days = usageStore.getDaysInRange(startStr, endStr);
+      const byLogin = new Map();
+      for (const d of days) {
+        if (d.ranking) {
+          const ranking = typeof d.ranking === "string" ? JSON.parse(d.ranking) : d.ranking;
+          for (const row of ranking) {
+            const login = String(row.user || "").trim();
+            if (!login) continue;
+            const key = login.toLowerCase();
+            const cur = byLogin.get(key) || { login, requests: 0 };
+            cur.requests += toNumber(row.requests);
+            byLogin.set(key, cur);
+          }
+          continue;
+        }
+        const payload = typeof d.data === "string" ? JSON.parse(d.data) : d.data;
+        const usageItems = Array.isArray(payload?.usageItems) ? payload.usageItems : [];
+        for (const item of usageItems) {
+          const login = pickUser(item);
+          if (login === "(unknown)") continue;
+          const key = login.toLowerCase();
+          const requests = toNumber(item.netQuantity) || toNumber(item.grossQuantity) || toNumber(item.quantity) || toNumber(item.requests);
+          const cur = byLogin.get(key) || { login, requests: 0 };
+          cur.requests += requests;
+          byLogin.set(key, cur);
+        }
+      }
+
+      const seats = (teamCache && teamCache.seatsRaw) || [];
+      const seatLookup = userMappingService.buildLookup(seats.map((s) => s.login));
+      const rowsByLogin = new Map();
+      for (const seat of seats) {
+        const login = String(seat.login || "").trim();
+        if (!login) continue;
+        const key = login.toLowerCase();
+        const mapped = seatLookup[key] || null;
+        const planType = String(seat.planType || "business").toLowerCase();
+        const plan = PLAN_CONFIG[planType] || PLAN_CONFIG.business;
+        const requests = byLogin.get(key)?.requests || 0;
+        const usagePercent = plan.quota > 0 ? Math.round((requests / plan.quota) * 10000) / 100 : 0;
+        rowsByLogin.set(key, {
+          login,
+          user: mapped ? mapped.adName : login,
+          team: (teamCache.userTeamMap[login] || []).join(", ") || seat.team || "-",
+          planType,
+          requests: Math.round(requests * 100) / 100,
+          quota: plan.quota,
+          usagePercent,
+        });
+      }
+
+      for (const usage of byLogin.values()) {
+        const key = usage.login.toLowerCase();
+        if (rowsByLogin.has(key)) continue;
+        const mapped = userMappingService.getADUserByGithubName(usage.login);
+        const plan = PLAN_CONFIG.business;
+        const requests = usage.requests;
+        rowsByLogin.set(key, {
+          login: usage.login,
+          user: mapped ? mapped.adName : usage.login,
+          team: (teamCache.userTeamMap[usage.login] || []).join(", ") || "-",
+          planType: "business",
+          requests: Math.round(requests * 100) / 100,
+          quota: plan.quota,
+          usagePercent: plan.quota > 0 ? Math.round((requests / plan.quota) * 10000) / 100 : 0,
+        });
+      }
+
+      const users = Array.from(rowsByLogin.values()).sort((a, b) => b.usagePercent - a.usagePercent || b.requests - a.requests || a.user.localeCompare(b.user));
+      const buckets = classifyQuotaUsage(users);
+      const bucketStats = QUOTA_USAGE_BUCKET_NAMES.map((name) => ({ name, count: buckets[name].length, users: buckets[name] }));
+
+      res.json({ ok: true, startDate: startStr, endDate: endStr, totalUsers: users.length, bucketStats, users });
     } catch (error) { writeError(res, error); }
   });
 

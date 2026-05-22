@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-const { toNumber, pickUser, buildQueryParams } = require("../lib/helpers");
+const { toNumber, pickUser, buildQueryParams, QUOTA_USAGE_BUCKET_NAMES, getQuotaUsageBucketName, classifyQuotaUsage } = require("../lib/helpers");
 
 describe("toNumber", () => {
   it("returns the number for a number input", () => {
@@ -70,5 +70,36 @@ describe("buildQueryParams", () => {
     expect(params.get("year")).toBe("2026");
     expect(params.get("month")).toBe("5");
     expect(params.get("cost_center_id")).toBe("cc-123");
+  });
+});
+
+describe("quota usage buckets", () => {
+  it("classifies quota usage with inclusive lower bounds", () => {
+    expect(getQuotaUsageBucketName(0)).toBe("配额使用小于 5%");
+    expect(getQuotaUsageBucketName(4.99)).toBe("配额使用小于 5%");
+    expect(getQuotaUsageBucketName(5)).toBe("配额使用 大于 5% 小于 50%");
+    expect(getQuotaUsageBucketName(49.99)).toBe("配额使用 大于 5% 小于 50%");
+    expect(getQuotaUsageBucketName(50)).toBe("配额使用 大于 50% 小于 100%");
+    expect(getQuotaUsageBucketName(99.99)).toBe("配额使用 大于 50% 小于 100%");
+    expect(getQuotaUsageBucketName(100)).toBe("配额使用 大于 100% 小于 200%");
+    expect(getQuotaUsageBucketName(199.99)).toBe("配额使用 大于 100% 小于 200%");
+    expect(getQuotaUsageBucketName(200)).toBe("配额使用 大于 200%");
+  });
+
+  it("returns all buckets when classifying users", () => {
+    const buckets = classifyQuotaUsage([
+      { user: "alice", usagePercent: 0 },
+      { user: "bob", usagePercent: 25 },
+      { user: "cora", usagePercent: 75 },
+      { user: "drew", usagePercent: 125 },
+      { user: "erin", usagePercent: 225 },
+    ]);
+
+    expect(Object.keys(buckets)).toEqual(QUOTA_USAGE_BUCKET_NAMES);
+    expect(buckets["配额使用小于 5%"].map((u) => u.user)).toEqual(["alice"]);
+    expect(buckets["配额使用 大于 5% 小于 50%"].map((u) => u.user)).toEqual(["bob"]);
+    expect(buckets["配额使用 大于 50% 小于 100%"].map((u) => u.user)).toEqual(["cora"]);
+    expect(buckets["配额使用 大于 100% 小于 200%"].map((u) => u.user)).toEqual(["drew"]);
+    expect(buckets["配额使用 大于 200%"].map((u) => u.user)).toEqual(["erin"]);
   });
 });
