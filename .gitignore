@@ -4,7 +4,12 @@ uploads/
 data/
 .claude/
 .vscode/
-.qoder/
+.qoder/*
+!.qoder/repowiki
+.qoder/repowiki/*
+!.qoder/repowiki/zh
+.qoder/repowiki/zh/*
+!.qoder/repowiki/zh/content
 server.log
 skills-lock.json
 skills/
