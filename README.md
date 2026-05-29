@@ -1,6 +1,6 @@
 # Copilot 每用户用量展示
 
-基于 Node.js + Express 的 GitHub Copilot Premium Request 用量可视化仪表盘，面向 GitHub Enterprise 管理员，提供每用户请求量排行、费用估算、Team 管理和账单汇总等功能。
+基于 Node.js + Express 的 GitHub Copilot 用量与账单可视化仪表盘，面向 GitHub Enterprise 管理员，提供每用户用量排行、Team 管理、Cost Center 预算、月度账单与整体账单汇总等功能。项目兼容 Premium Request 旧计费模型，并支持 GitHub Copilot usage-based billing / AI Credits 过渡配置。
 
 ## 功能特性
 
@@ -17,6 +17,7 @@
 - **排序** — 全部表格列支持升序/降序点击排序
 - **用户 & Team 信息** — 查看 Enterprise Teams（名称、描述、成员数），点击展开查看 Team 成员（AD 名称优先，GitHub 登录名回退）；查看全量 Copilot 席位列表（AD 名映射显示）
 - **整体账单汇总** — 席位订阅费 + Premium Requests 超额费用（API 净额口径），支持历史月切換和强制刷新回源
+- **AI Credits 账单汇总** — 支持 `BILLING_MODEL=ai_credits`，整体账单汇总改用 GitHub enhanced billing `usage/summary` 的 Copilot `netAmount` 作为权威金额口径，并展示池化 AI Credits、折算 credits 与金额来源
 - **模型使用排行** — 按月查看各 AI 模型的请求量和费用占比
 - **启动前自检** — 提供 Shell 与 Node 两版 preflight 脚本用于权限和连通性检查
 - **Cost Center 详情增强** — 点击名称可查看常规信息卡片、资源分组明细（Users/Organizations/Repositories）
@@ -41,6 +42,7 @@
 - **用户活跃性分析** — 数据分析页新增"用户活跃性"Tab，饼图按不活跃天数将全量席位用户分为 4 类：1~5日不活跃、6~10日不活跃、10日以上不活跃、注册后未活跃；支持 Team 单选过滤；点击饼图扇形在下方展开用户列表（显示名 / Team / 最后活跃），用户名遵循 AD 映射规则
 - **本周期套餐用量分析** — 数据分析页新增"本周期套餐用量"Tab，按当前自然月统计全量席位用户的 Premium Requests 配额使用率；支持 Team 单选过滤，饼图按 <5%、5%-50%、50%-100%、100%-200%、>=200% 分布展示，点击扇形可展开用户明细（用户名 / Team / Premium Requests 使用率）
 - **Team 月度账单** — 独立页面 `/billpage`，按月查看 Team 维度账单，显示席位费、套餐外附加费、总费用，支持展开查看用户明细，历史数据持久化到 SQLite（仅通过直接访问 URL `/billpage` 进入，主页不展示入口）
+- **双计费模型兼容** — `legacy_pru` 保留 Premium Request 历史/过渡期逻辑；`ai_credits` 面向 2026-06-01 后 usage-based billing；`auto` 按账期自动选择模型
 - **按月强制刷新兑底** — `/billpage` 页面提供“强制刷新”按钮：二次确认后会清空选中月份的 SQLite 缓存、逐日回源 GitHub API并重新计算账单，作为缓存错误、空数据或 API 数据延迟场景下的兑底手段
 - **账单导出 Excel** — `/billpage` 页面提供"导出Excel"按钮，将选中月份的 Team 账单导出为 `.xlsx` 文件；每个 Team 生成独立 Sheet（含用户名、Team名、用量信息、套餐外附加费、总费用），另附 "Total" 汇总 Sheet（Team 级聚合统计），使用 `exceljs` 库在服务端生成并流式返回
 - **按日强制回源** — `POST /api/usage/refresh` 支持 `force:true` 参数，跳过内存与 SQLite TTL 检查，直接拉取最新数据并覆盖写入
@@ -106,8 +108,9 @@ data/
 | 端点 | 用途 |
 | --- | --- |
 | `GET /enterprises/{enterprise}/copilot/billing/seats` | 用户列表、Team 归属、计划类型、最后活跃时间/编辑器 |
-| `GET /enterprises/{enterprise}/settings/billing/premium_request/usage` | 每用户 Premium Request 用量（支持 `?user=`、`?year=`、`?month=`、`?day=`） |
-| `GET /enterprises/{enterprise}/settings/billing/usage` | 企业整体账单（席位费 + Premium Requests 费用） |
+| `GET /enterprises/{enterprise}/settings/billing/premium_request/usage` | Legacy Premium Request 用量（支持 `?user=`、`?year=`、`?month=`、`?day=`），用于历史/过渡期与活动排行 |
+| `GET /enterprises/{enterprise}/settings/billing/usage` | Enhanced billing 明细报表，legacy 模式用于整体账单回源 |
+| `GET /enterprises/{enterprise}/settings/billing/usage/summary` | Enhanced billing 汇总报表，AI Credits 模式下按 `product=Copilot` 聚合 Copilot `netAmount` |
 | `GET /enterprises/{enterprise}/settings/billing/cost-centers` | Cost Center 列表与详情 |
 | `POST /enterprises/{enterprise}/settings/billing/cost-centers/{cost_center_id}/resource` | 向 Cost Center 添加资源（users/orgs/repos） |
 | `DELETE /enterprises/{enterprise}/settings/billing/cost-centers/{cost_center_id}/resource` | 从 Cost Center 移除资源（users/orgs/repos） |
@@ -164,6 +167,8 @@ cp .env.example .env
 GITHUB_TOKEN=YOUR_GITHUB_TOKEN
 ENTERPRISE_SLUG=YourEnterprise
 PRODUCT=Copilot
+GITHUB_API_VERSION=2026-03-10
+BILLING_MODEL=auto
 ```
 
 ### 启动
@@ -214,7 +219,9 @@ node ./scripts/preflight-check.js --strict
 | `BILLING_DAY` | 否 | 可选，指定具体日期 |
 | `PRODUCT` | 否 | 产品过滤，默认 `Copilot` |
 | `MODEL` | 否 | 可选，按模型过滤 |
-| `INCLUDED_QUOTA` | 否 | 每用户每周期包含请求配额，默认 `300`，用于进度条基线和百分比计算 |
+| `GITHUB_API_VERSION` | 否 | GitHub REST API 版本请求头，默认 `2026-03-10`；若 GitHub 后续发布新版本，可通过该变量切换，无需改代码 |
+| `BILLING_MODEL` | 否 | Copilot 计费模型：`auto`（默认，2026-06 起切到 AI Credits）、`legacy_pru`（Premium Request 旧口径）、`ai_credits`（usage-based billing / GitHub AI Credits） |
+| `INCLUDED_QUOTA` | 否 | 每用户每周期包含请求配额，默认 `300`；仅 legacy PRU 模式用于进度条基线和百分比计算 |
 | `CACHE_TTL` | 否 | API 响应在前端的缓存时长（秒），默认 `300`（5 分钟），缓存期内采用 SWR 策略无缝展示 |
 | `GITHUB_MAX_CONCURRENT` | 否 | GitHub API 并发请求上限，默认 `3`，防止因瞬时并发触发 Secondary Rate Limit |
 | `GITHUB_MAX_RETRIES` | 否 | GitHub API 请求遇错和被限流时的最大重试次数，默认 `3` |
@@ -315,7 +322,7 @@ curl -X POST http://localhost:3000/api/usage/refresh \
 1. 必填环境变量校验
 2. DNS 与网络连通性
 3. Token 有效性
-4. Seats 与 Premium Usage 必要权限
+4. Seats 与 Premium Usage / Enhanced Billing 必要权限
 5. Cost Centers / Budgets 能力探测（可选功能）
 
 输出级别：`PASS` / `WARN` / `FAIL`
@@ -480,9 +487,23 @@ sudo systemctl reload nginx
 | `deploy/copilot-dashboard.service` | systemd 服务单元，以 `www-data` 用户运行，异常自动重启 |
 | `deploy/nginx-copilot-dashboard.conf` | Nginx 反向代理，将 80 端口转发到 Node.js 的 3000 端口 |
 
-## 费用计算逻辑
+## 计费模型与费用口径
 
-每用户月度费用按以下规则计算：
+### AI Credits / usage-based billing（2026-06 起）
+
+当 `BILLING_MODEL=ai_credits`，或 `BILLING_MODEL=auto` 且查询账期为 2026-06 及之后时，整体账单汇总使用 AI Credits 模式：
+
+- 席位基础价保持不变：Business $19 / Enterprise $39。
+- Copilot Business 标准包含 `1900` AI Credits / 席 / 月；Copilot Enterprise 标准包含 `3900` AI Credits / 席 / 月。
+- 2026-06 至 2026-08 的过渡促销额度：Business `3000` AI Credits / 席 / 月，Enterprise `7000` AI Credits / 席 / 月。
+- AI Credits 在组织/企业 billing entity 层面池化，不再按每个用户独立扣减请求配额。
+- 金额以 GitHub enhanced billing API 返回的 Copilot `netAmount` 为权威。项目只做聚合和展示，不在本地按 token 或 request 重新计算账单。
+- `1 AI credit = $0.01 USD` 仅用于展示“金额折算 credits”的辅助指标，不作为替代 GitHub 账单的本地计费引擎。
+- 如果 GitHub API 未提供企业级 user 维度 AI Credits 金额，用户排行仍作为活动/用量参考，不声称是精确用户账单分摊。
+
+### Legacy Premium Request 模式
+
+当 `BILLING_MODEL=legacy_pru`，或 `BILLING_MODEL=auto` 且查询账期早于 2026-06 时，每用户月度费用按以下规则计算：
 
 - **额度内**（请求量 ≤ 计划额度）：费用 = 订阅基础价（Business $19 / Enterprise $39）
 - **超额**（请求量 > 计划额度）：费用 = 基础价 + (超出请求数 × $0.04)
@@ -492,7 +513,26 @@ sudo systemctl reload nginx
 | Business | 300 requests | $19 | $0.04/request |
 | Enterprise | 1000 requests | $39 | $0.04/request |
 
+### 脱敏与审计要求
+
+- `.env` 不应提交到 Git；`.env.example` 只能包含空值或示例值，禁止写入真实 PAT、Authorization header、企业内部用户邮箱、Cost Center 私密名称清单等敏感信息。
+- 日志与审计输出应遵循最小必要原则：保留 `billingModel`、账期、GitHub API endpoint 类型、HTTP 状态码、聚合金额、`amountSource` / `amountSources`、`cost_center_id` 等排障字段；避免记录 token、完整请求头、原始用户邮箱列表、原始 API 响应全文。
+- AI Credits 金额审计以 GitHub enhanced billing API 的 `netAmount` 为准；本地展示的 `copilotEstimatedCredits` 只是按 `$0.01/credit` 折算的可读指标。
+- 使用 `LOG_LEVEL=trace` 做本地调试时，应避免把输出直接粘贴到 issue、PR、日志系统或聊天工具；分享前需确认 token、用户身份、邮箱、内部 Team / Cost Center 命名已脱敏。
+- 提交前建议执行 `git diff` 并搜索 `ghp_`、`github_pat_`、`Authorization`、`Bearer` 等敏感模式，确认没有凭据进入版本库。
+
 ## 更新日志
+
+### v3.2 — AI Credits 双计费模型与审计口径
+
+- **双计费模型开关** — 新增 `BILLING_MODEL=auto|legacy_pru|ai_credits`。`legacy_pru` 保留 Premium Request 历史/过渡期逻辑；`ai_credits` 使用 GitHub usage-based billing / AI Credits 口径；`auto` 在 2026-06 及之后自动使用 AI Credits。
+- **GitHub API 版本可配置** — 新增 `GITHUB_API_VERSION`，默认 `2026-03-10`，为 2026-06-01 后 GitHub 可能发布的新 REST API 版本预留无代码切换路径。
+- **AI Credits 配额配置** — 新增 Business / Enterprise 标准 AI Credits 与 2026-06 至 2026-08 促销额度。整体账单汇总展示池化 included credits，不再按用户独立 Premium Request quota 解释新模式账单。
+- **Copilot 金额归一化** — 新增 Copilot billing item 识别与金额归一化逻辑，兼容 legacy `Copilot Premium Request` 与未来 AI Credits SKU；金额优先使用 `netAmount`，缺失时才按 `grossAmount - discountAmount` 兜底。
+- **整体账单汇总支持 AI Credits** — `/api/billing/summary` 在 AI Credits 模式下调用 enhanced billing `usage/summary?product=Copilot`，返回 `copilotNetAmount`、`copilotEstimatedCredits`、`includedCreditsPool`、`amountSources` 等审计字段。
+- **前端账单弹窗模式化展示** — 首页“整体账单汇总”弹窗会按 `billingModel` 切换文案。AI Credits 模式不再展示“超额请求数 / $0.04/request”，改为展示池化 credits、Copilot 消费金额和 GitHub API 金额来源。
+- **测试覆盖扩展** — 新增 GitHub API 版本测试与 billing summary 路由测试，扩展 billing config / helpers 测试，全量测试覆盖提升到 74 个。
+- **脱敏与审计要求明确化** — README 新增脱敏与审计要求，强调 `.env` 不入库、真实 token 不写文档、AI Credits 金额以 GitHub `netAmount` 为权威。
 
 ### v3.1 — Billpage 套餐外附加费改为直接读取 GitHub spent
 

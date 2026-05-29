@@ -2,9 +2,9 @@
  * Billing routes – GET /api/seats, /api/billing/summary, /api/billing/models
  */
 const express = require("express");
-const { requiredEnv, PLAN_CONFIG } = require("../lib/billing-config");
+const { requiredEnv, PLAN_CONFIG, resolveBillingModel, getIncludedCreditsPerSeat } = require("../lib/billing-config");
 const { githubGetJson, invalidateCacheByPrefix } = require("../lib/github-api");
-const { toNumber, writeError, buildEndpoint } = require("../lib/helpers");
+const { toNumber, writeError, buildEndpoint, buildBillingUsageEndpoint, aggregateCopilotBillingItems } = require("../lib/helpers");
 const { ensureSeatsData, fetchCopilotSeats } = require("./seats");
 
 module.exports = function createBillingRouter({ usageStore, teamCache, userMappingService }) {
@@ -41,6 +41,10 @@ module.exports = function createBillingRouter({ usageStore, teamCache, userMappi
       const hasPeriod =
         Number.isInteger(yearParam) && yearParam > 2000 &&
         Number.isInteger(monthParam) && monthParam >= 1 && monthParam <= 12;
+      const now = new Date();
+      const responseYear = hasPeriod ? yearParam : now.getUTCFullYear();
+      const responseMonth = hasPeriod ? monthParam : (now.getUTCMonth() + 1);
+      const billingModel = resolveBillingModel({ year: responseYear, month: responseMonth });
 
       // Force mode: also refresh seats snapshot and drop LRU for billing/usage
       await ensureSeatsData(teamCache, usageStore, force);
@@ -48,20 +52,76 @@ module.exports = function createBillingRouter({ usageStore, teamCache, userMappi
         invalidateCacheByPrefix("/settings/billing/usage");
       }
 
-      const endpoint = buildEndpoint();
+      const seats = teamCache.seatsRaw;
+      const planCounts = {};
+      for (const s of seats) { const pt = s.planType || "business"; planCounts[pt] = (planCounts[pt] || 0) + 1; }
+
+      if (billingModel === "ai_credits") {
+        const endpoint = buildBillingUsageEndpoint("summary");
+        const params = new URLSearchParams();
+        if (hasPeriod) {
+          params.set("year", String(yearParam));
+          params.set("month", String(monthParam));
+        }
+        params.set("product", "Copilot");
+
+        const billingData = await githubGetJson(endpoint.path, params);
+        const rawItems = Array.isArray(billingData?.usageItems) ? billingData.usageItems : [];
+
+        const planSummary = [];
+        let totalSeatsCost = 0, includedCreditsPool = 0;
+        for (const [plan, count] of Object.entries(planCounts)) {
+          const legacyCfg = PLAN_CONFIG[plan] || PLAN_CONFIG.business;
+          const includedCreditsPerSeat = getIncludedCreditsPerSeat(plan, { year: responseYear, month: responseMonth });
+          const cost = count * legacyCfg.baseCost;
+          totalSeatsCost += cost;
+          includedCreditsPool += count * includedCreditsPerSeat;
+          planSummary.push({
+            plan,
+            seats: count,
+            baseCost: legacyCfg.baseCost,
+            totalCost: cost,
+            includedCreditsPerSeat,
+            totalIncludedCredits: count * includedCreditsPerSeat,
+          });
+        }
+
+        const copilotBilling = aggregateCopilotBillingItems(rawItems);
+        const copilotNetAmount = copilotBilling.amount;
+        const totalEstimatedCost = Math.round((totalSeatsCost + copilotNetAmount) * 10000) / 10000;
+
+        res.json({
+          ok: true,
+          billingModel,
+          year: responseYear,
+          month: responseMonth,
+          isCurrentMonth: !hasPeriod,
+          force,
+          rawItems,
+          planSummary,
+          totalSeats: seats.length,
+          totalSeatsCost,
+          includedCreditsPool,
+          copilotNetAmount,
+          copilotBillingItemCount: copilotBilling.itemCount,
+          amountSources: copilotBilling.amountSources,
+          copilotEstimatedCredits: Math.round(copilotNetAmount * 100 * 100) / 100,
+          totalEstimatedCost,
+        });
+        return;
+      }
+
+      const endpoint = buildBillingUsageEndpoint("report");
       const params = new URLSearchParams();
       if (hasPeriod) {
         params.set("year", String(yearParam));
         params.set("month", String(monthParam));
       }
       const billingData = await githubGetJson(
-        `/enterprises/${encodeURIComponent(endpoint.enterprise)}/settings/billing/usage`,
+        endpoint.path,
         hasPeriod ? params : null
       );
       const rawItems = Array.isArray(billingData?.usageItems) ? billingData.usageItems : [];
-      const seats = teamCache.seatsRaw;
-      const planCounts = {};
-      for (const s of seats) { const pt = s.planType || "business"; planCounts[pt] = (planCounts[pt] || 0) + 1; }
 
       const planSummary = [];
       let totalSeatsCost = 0, totalIncludedQuota = 0;
@@ -90,11 +150,11 @@ module.exports = function createBillingRouter({ usageStore, teamCache, userMappi
       const overageCostSource = hasApiNet ? "api-netAmount" : "local-formula";
       const totalEstimatedCost = Math.round((totalSeatsCost + overageCost) * 10000) / 10000;
 
-      const now = new Date();
       res.json({
         ok: true,
-        year: hasPeriod ? yearParam : now.getUTCFullYear(),
-        month: hasPeriod ? monthParam : (now.getUTCMonth() + 1),
+        billingModel,
+        year: responseYear,
+        month: responseMonth,
         isCurrentMonth: !hasPeriod,
         force,
         rawItems, planSummary, totalSeats: seats.length,

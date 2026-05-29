@@ -508,11 +508,38 @@
 
   function renderBillingSummaryBody(data) {
     var monthLabel = data.year + "\u5E74" + data.month + "\u6708" + (data.isCurrentMonth ? "\uFF08\u5F53\u6708\uFF09" : "");
+    var isAiCredits = data.billingModel === "ai_credits";
     var html = '<h3>\u5E2D\u4F4D\u8BA2\u9605</h3><table><thead><tr><th>\u8BA2\u9605\u8BA1\u5212</th><th>\u5E2D\u4F4D\u6570</th><th>\u5355\u4EF7(\u6708)</th><th>\u5C0F\u8BA1(USD)</th><th>\u5355\u5E2D\u4F4D\u989D\u5EA6</th><th>\u603B\u989D\u5EA6</th></tr></thead><tbody>';
     (data.planSummary || []).forEach(function (p) {
-      html += "<tr><td>Copilot " + C.escapeHtml(p.plan) + "</td><td>" + p.seats + "</td><td>$" + p.baseCost + "</td><td>$" + p.totalCost.toFixed(2) + "</td><td>" + p.quotaPerSeat + " requests</td><td>" + p.totalQuota + " requests</td></tr>";
+      var perSeatQuota = isAiCredits ? (p.includedCreditsPerSeat + " AI Credits") : (p.quotaPerSeat + " requests");
+      var totalQuota = isAiCredits ? (p.totalIncludedCredits + " AI Credits") : (p.totalQuota + " requests");
+      html += "<tr><td>Copilot " + C.escapeHtml(p.plan) + "</td><td>" + p.seats + "</td><td>$" + p.baseCost + "</td><td>$" + p.totalCost.toFixed(2) + "</td><td>" + perSeatQuota + "</td><td>" + totalQuota + "</td></tr>";
     });
     html += "</tbody></table>";
+
+    if (isAiCredits) {
+      var creditsPct = data.includedCreditsPool > 0 ? (data.copilotEstimatedCredits / data.includedCreditsPool * 100).toFixed(1) : "0";
+      html += "<h3>AI Credits \u4F7F\u7528\u60C5\u51B5\uFF08" + C.escapeHtml(monthLabel) + "\uFF09</h3><table><thead><tr><th>\u9879\u76EE</th><th>\u503C</th></tr></thead><tbody>";
+      html += "<tr><td>\u8BA1\u8D39\u6A21\u5F0F</td><td>AI Credits / usage-based billing</td></tr>";
+      html += "<tr><td>\u6C60\u5316\u5305\u542B\u989D\u5EA6</td><td>" + data.includedCreditsPool + " AI Credits (" + data.totalSeats + " \u5E2D\u4F4D)</td></tr>";
+      html += "<tr><td>Copilot \u6D88\u8D39\u91D1\u989D</td><td>$" + data.copilotNetAmount.toFixed(4) + "</td></tr>";
+      html += "<tr><td>\u6298\u7B97 AI Credits</td><td>" + data.copilotEstimatedCredits.toFixed(2) + " credits</td></tr>";
+      html += "<tr><td>\u989D\u5EA6\u4F7F\u7528\u7387\uFF08\u6309\u91D1\u989D\u6298\u7B97\uFF09</td><td>" + creditsPct + "%</td></tr>";
+      html += "<tr><td>\u91D1\u989D\u6765\u6E90</td><td>" + C.escapeHtml((data.amountSources || []).join(", ") || "-") + "</td></tr>";
+      html += "</tbody></table>";
+      html += "<h3>\u8D39\u7528\u6C47\u603B</h3><table><thead><tr><th>\u9879\u76EE</th><th>\u91D1\u989D(USD)</th></tr></thead><tbody>";
+      html += "<tr><td>\u5E2D\u4F4D\u8BA2\u9605\u8D39</td><td>$" + data.totalSeatsCost.toFixed(2) + "</td></tr>";
+      html += "<tr><td>Copilot AI Credits \u6D88\u8D39</td><td>$" + data.copilotNetAmount.toFixed(4) + "</td></tr>";
+      html += "<tr style='font-weight:bold;border-top:2px solid var(--border)'><td>" + C.escapeHtml(monthLabel) + "\u9884\u4F30\u603B\u8D39\u7528</td><td>$" + data.totalEstimatedCost.toFixed(4) + "</td></tr></tbody></table>";
+      html += '<details style="margin-top:1rem"><summary style="cursor:pointer;color:var(--muted)">\u67E5\u770B API \u539F\u59CB\u8BA1\u8D39\u6570\u636E</summary>';
+      html += '<table style="margin-top:0.5rem"><thead><tr><th>SKU</th><th>\u6570\u91CF</th><th>\u5355\u4F4D</th><th>\u5355\u4EF7</th><th>\u603B\u989D</th><th>\u6298\u6263</th><th>\u51C0\u989D</th></tr></thead><tbody>';
+      (data.rawItems || []).forEach(function (item) {
+        html += "<tr><td>" + C.escapeHtml(item.sku || "-") + "</td><td>" + (item.quantity != null ? Number(item.quantity).toFixed(2) : "-") + "</td><td>" + C.escapeHtml(item.unitType || "-") + "</td><td>" + (item.pricePerUnit != null ? "$" + Number(item.pricePerUnit).toFixed(4) : "-") + "</td><td>" + (item.grossAmount != null ? "$" + Number(item.grossAmount).toFixed(4) : "-") + "</td><td>" + (item.discountAmount != null ? "$" + Number(item.discountAmount).toFixed(4) : "-") + "</td><td>" + (item.netAmount != null ? "$" + Number(item.netAmount).toFixed(4) : "-") + "</td></tr>";
+      });
+      html += "</tbody></table></details>";
+      return html;
+    }
+
     html += "<h3>Premium Requests \u4F7F\u7528\u60C5\u51B5\uFF08" + C.escapeHtml(monthLabel) + "\uFF09</h3><table><thead><tr><th>\u9879\u76EE</th><th>\u503C</th></tr></thead><tbody>";
     html += "<tr><td>" + C.escapeHtml(monthLabel) + "\u603B Premium Requests</td><td>" + data.totalPremiumRequests + "</td></tr>";
     html += "<tr><td>\u8BA2\u9605\u5305\u542B\u989D\u5EA6</td><td>" + data.totalIncludedQuota + " requests (" + data.totalSeats + " \u5E2D\u4F4D)</td></tr>";
@@ -533,7 +560,7 @@
     html += '<details style="margin-top:1rem"><summary style="cursor:pointer;color:var(--muted)">\u67E5\u770B API \u539F\u59CB\u8BA1\u8D39\u6570\u636E</summary>';
     html += '<table style="margin-top:0.5rem"><thead><tr><th>SKU</th><th>\u6570\u91CF</th><th>\u5355\u4F4D</th><th>\u5355\u4EF7</th><th>\u603B\u989D</th><th>\u6298\u6263</th><th>\u51C0\u989D</th></tr></thead><tbody>';
     (data.rawItems || []).forEach(function (item) {
-      html += "<tr><td>" + C.escapeHtml(item.sku) + "</td><td>" + (item.quantity != null ? item.quantity.toFixed(2) : "-") + "</td><td>" + C.escapeHtml(item.unitType) + "</td><td>$" + (item.pricePerUnit != null ? item.pricePerUnit.toFixed(2) : "-") + "</td><td>$" + (item.grossAmount != null ? item.grossAmount.toFixed(4) : "-") + "</td><td>$" + (item.discountAmount != null ? item.discountAmount.toFixed(4) : "-") + "</td><td>$" + (item.netAmount != null ? item.netAmount.toFixed(4) : "-") + "</td></tr>";
+      html += "<tr><td>" + C.escapeHtml(item.sku || "-") + "</td><td>" + (item.quantity != null ? Number(item.quantity).toFixed(2) : "-") + "</td><td>" + C.escapeHtml(item.unitType || "-") + "</td><td>" + (item.pricePerUnit != null ? "$" + Number(item.pricePerUnit).toFixed(2) : "-") + "</td><td>" + (item.grossAmount != null ? "$" + Number(item.grossAmount).toFixed(4) : "-") + "</td><td>" + (item.discountAmount != null ? "$" + Number(item.discountAmount).toFixed(4) : "-") + "</td><td>" + (item.netAmount != null ? "$" + Number(item.netAmount).toFixed(4) : "-") + "</td></tr>";
     });
     html += "</tbody></table></details>";
     return html;
@@ -563,11 +590,13 @@
       content.innerHTML = renderBillingSummaryBody(data);
       if (metaSpan) {
         var pad = function (n) { return n < 10 ? "0" + n : String(n); };
-        var srcLabel = data.overageCostSource === "api-netAmount" ? "GitHub API netAmount" : "\u672C\u5730\u516C\u5F0F";
+        var srcLabel = data.billingModel === "ai_credits"
+          ? "AI Credits / GitHub API netAmount"
+          : (data.overageCostSource === "api-netAmount" ? "GitHub API netAmount" : "\u672C\u5730\u516C\u5F0F");
         metaSpan.textContent =
           (data.isCurrentMonth ? "\u5F53\u6708 " : "\u5386\u53F2\u6708 ") +
           data.year + "-" + pad(data.month) +
-          " \uFF5C \u8D85\u989D\u53E3\u5F84\uFF1A" + srcLabel +
+          " \uFF5C \u8BA1\u8D39\u53E3\u5F84\uFF1A" + srcLabel +
           (data.force ? " \uFF5C \u5DF2\u5F3A\u5236\u56DE\u6E90" : "");
       }
     } catch (err) {
