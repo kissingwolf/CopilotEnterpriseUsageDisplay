@@ -174,10 +174,11 @@ module.exports = function createBillingRouter({ usageStore, teamCache, userMappi
 
   router.get("/api/billing/models", async (req, res) => {
     try {
-      const endpoint = buildEndpoint();
       const nowM = new Date();
       const year = req.query.year || requiredEnv("BILLING_YEAR") || String(nowM.getUTCFullYear());
       const month = req.query.month || requiredEnv("BILLING_MONTH") || String(nowM.getUTCMonth() + 1);
+      const billingModel = resolveBillingModel({ year, month });
+      const endpoint = billingModel === "ai_credits" ? buildBillingUsageEndpoint("report") : buildEndpoint();
       const params = new URLSearchParams();
       if (year) params.set("year", String(year));
       if (month) params.set("month", String(month));
@@ -188,9 +189,11 @@ module.exports = function createBillingRouter({ usageStore, teamCache, userMappi
       const models = {};
       for (const item of items) {
         const model = item.model || "Unknown";
+        const quantity = toNumber(item.netQuantity) || toNumber(item.grossQuantity) || toNumber(item.quantity) || toNumber(item.requests);
+        const amount = item.netAmount != null ? toNumber(item.netAmount) : toNumber(item.grossAmount);
         if (!models[model]) models[model] = { model, grossQuantity: 0, grossAmount: 0, pricePerUnit: item.pricePerUnit || 0 };
-        models[model].grossQuantity += toNumber(item.grossQuantity);
-        models[model].grossAmount += toNumber(item.grossAmount);
+        models[model].grossQuantity += quantity;
+        models[model].grossAmount += amount;
       }
 
       const sorted = Object.values(models)
@@ -205,7 +208,7 @@ module.exports = function createBillingRouter({ usageStore, teamCache, userMappi
       const totalAmount = sorted.reduce((s, m) => s + m.grossAmount, 0);
 
       res.json({
-        ok: true, year: Number(year), month: Number(month), models: sorted,
+        ok: true, billingModel, year: Number(year), month: Number(month), models: sorted,
         totalQuantity: Math.round(totalQty * 100) / 100,
         totalAmount: Math.round(totalAmount * 10000) / 10000,
       });

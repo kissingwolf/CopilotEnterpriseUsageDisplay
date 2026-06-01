@@ -625,6 +625,10 @@
       var data = await C.apiFetchJson("/api/billing/models?year=" + now.getUTCFullYear() + "&month=" + (now.getUTCMonth() + 1), {}, "获取模型排行失败");
       var models = data.models || [];
       var html = "<p>" + data.year + "\u5e74" + data.month + "\u6708\u3000\u603b\u8bf7\u6c42: <strong>" + data.totalQuantity + "</strong>\u3000\u603b\u91d1\u989d: <strong>$" + data.totalAmount.toFixed(4) + "</strong></p>";
+      if (!models.length) {
+        modalBody.innerHTML = html + '<div style="color:var(--muted)">\u5f53\u524d\u8d26\u671f\u6682\u65e0\u6309\u6a21\u578b\u7684\u4f7f\u7528\u660e\u7ec6\u6570\u636e\uff0c\u603b\u4f53\u91d1\u989d\u8bf7\u67e5\u770b\u201c\u6574\u4f53\u8d26\u5355\u6c47\u603b\u201d\u3002</div>';
+        return;
+      }
       html += '<table><thead><tr><th>\u6a21\u578b</th><th>\u8bf7\u6c42\u91cf</th><th>\u5360\u6bd4(%)</th><th>\u5355\u4ef7</th><th>\u91d1\u989d(USD)</th></tr></thead><tbody>';
       models.forEach(function (m) {
         var pct = data.totalQuantity > 0 ? (m.grossQuantity / data.totalQuantity * 100).toFixed(2) : "0.00";

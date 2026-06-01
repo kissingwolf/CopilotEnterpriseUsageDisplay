@@ -109,7 +109,7 @@ data/
 | --- | --- |
 | `GET /enterprises/{enterprise}/copilot/billing/seats` | 用户列表、Team 归属、计划类型、最后活跃时间/编辑器 |
 | `GET /enterprises/{enterprise}/settings/billing/premium_request/usage` | Legacy Premium Request 用量（支持 `?user=`、`?year=`、`?month=`、`?day=`），用于历史/过渡期与活动排行 |
-| `GET /enterprises/{enterprise}/settings/billing/usage` | Enhanced billing 明细报表，legacy 模式用于整体账单回源 |
+| `GET /enterprises/{enterprise}/settings/billing/usage` | Enhanced billing 明细报表，legacy 模式用于整体账单回源，AI Credits 模式用于模型维度用量排行 |
 | `GET /enterprises/{enterprise}/settings/billing/usage/summary` | Enhanced billing 汇总报表，AI Credits 模式下按 `product=Copilot` 聚合 Copilot `netAmount` |
 | `GET /enterprises/{enterprise}/settings/billing/cost-centers` | Cost Center 列表与详情 |
 | `POST /enterprises/{enterprise}/settings/billing/cost-centers/{cost_center_id}/resource` | 向 Cost Center 添加资源（users/orgs/repos） |
@@ -125,6 +125,7 @@ data/
 | `POST` | `/api/usage/refresh` | 刷新用量数据，支持按日期/日期范围/默认三种查询模式；请求体可传 `force:true` 跳过内存与 SQLite 缓存强制回源 |
 | `POST` | `/api/bill/refresh` | **按月强制刷新**：请求体 `{year, month}`，清空该月所有 `daily_usage` 与 `monthly_bill` 缓存后逐日回源 GitHub，重新计算账单 |
 | `GET` | `/api/seats` | 获取 Copilot 席位数据（支持 `?refresh=1` 强制刷新） |
+| `GET` | `/api/billing/models?year=2026&month=6` | 模型使用排行；legacy PRU 模式读取 Premium Request 用量，AI Credits 模式读取 Enhanced billing 明细报表 |
 | `GET` | `/api/teams` | 获取 Enterprise Teams 列表（含成员数） |
 | `GET` | `/api/cost-centers` | 获取 Cost Center 列表 |
 | `GET` | `/api/cost-centers/:name` | 获取单个 Cost Center 详情（含资源分组） |
@@ -522,6 +523,12 @@ sudo systemctl reload nginx
 - 提交前建议执行 `git diff` 并搜索 `ghp_`、`github_pat_`、`Authorization`、`Bearer` 等敏感模式，确认没有凭据进入版本库。
 
 ## 更新日志
+
+### v3.3 — AI Credits 模式下模型排行数据源修正
+
+- **模型使用排行支持 AI Credits 明细口径** — 首页“模型使用排行”弹窗对应的 `/api/billing/models` 会按 `BILLING_MODEL` 与查询账期选择数据源：legacy PRU 保持读取 `premium_request/usage`，AI Credits 读取 enhanced billing `usage?product=Copilot` 明细报表。
+- **前端弹窗响应结构保持兼容** — `/api/billing/models` 仍返回 `models[]`、`totalQuantity`、`totalAmount` 等既有字段；后端在 AI Credits 模式下优先使用 `netQuantity` / `netAmount` 聚合模型排行，避免影响首页其他弹窗和页面。
+- **模型排行空态更明确** — 当当前账期没有按模型的明细项时，弹窗显示“暂无按模型的使用明细数据”，不再渲染空表，也不把汇总 SKU 伪装成模型排行。
 
 ### v3.2 — AI Credits 双计费模型与审计口径
 
