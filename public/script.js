@@ -622,17 +622,32 @@
     try {
       await forceRefreshSeatsCache();
       var now = new Date();
-      var data = await C.apiFetchJson("/api/billing/models?year=" + now.getUTCFullYear() + "&month=" + (now.getUTCMonth() + 1), {}, "获取模型排行失败");
+      var y = now.getUTCFullYear();
+      var m = now.getUTCMonth() + 1;
+      var data = await C.apiFetchJson("/api/billing/models?year=" + y + "&month=" + m, {}, "获取模型排行失败");
+      var fallbackNotice = "";
+      if (!(data.models || []).length) {
+        var prevY = m === 1 ? y - 1 : y;
+        var prevM = m === 1 ? 12 : m - 1;
+        var prev = await C.apiFetchJson("/api/billing/models?year=" + prevY + "&month=" + prevM, {}, "获取上月模型排行失败");
+        if ((prev.models || []).length) {
+          fallbackNotice = '<div style="color:var(--muted);margin-bottom:8px">\u5f53\u6708\u8d26\u671f\u6682\u65e0\u6570\u636e\uff0c\u5df2\u5207\u6362\u5230 ' + prev.year + ' \u5e74 ' + prev.month + ' \u6708\u3002</div>';
+          data = prev;
+        }
+      }
       var models = data.models || [];
-      var html = "<p>" + data.year + "\u5e74" + data.month + "\u6708\u3000\u603b\u8bf7\u6c42: <strong>" + data.totalQuantity + "</strong>\u3000\u603b\u91d1\u989d: <strong>$" + data.totalAmount.toFixed(4) + "</strong></p>";
+      var html = fallbackNotice + "<p>" + data.year + "\u5e74" + data.month + "\u6708\u3000\u603b\u8bf7\u6c42: <strong>" + data.totalQuantity + "</strong>\u3000\u603b\u91d1\u989d: <strong>$" + data.totalAmount.toFixed(4) + "</strong></p>";
       if (!models.length) {
         modalBody.innerHTML = html + '<div style="color:var(--muted)">\u5f53\u524d\u8d26\u671f\u6682\u65e0\u6309\u6a21\u578b\u7684\u4f7f\u7528\u660e\u7ec6\u6570\u636e\uff0c\u603b\u4f53\u91d1\u989d\u8bf7\u67e5\u770b\u201c\u6574\u4f53\u8d26\u5355\u6c47\u603b\u201d\u3002</div>';
         return;
       }
-      html += '<table><thead><tr><th>\u6a21\u578b</th><th>\u8bf7\u6c42\u91cf</th><th>\u5360\u6bd4(%)</th><th>\u5355\u4ef7</th><th>\u91d1\u989d(USD)</th></tr></thead><tbody>';
-      models.forEach(function (m) {
-        var pct = data.totalQuantity > 0 ? (m.grossQuantity / data.totalQuantity * 100).toFixed(2) : "0.00";
-        html += "<tr><td>" + C.escapeHtml(m.model) + "</td><td>" + m.grossQuantity + "</td><td>" + pct + "%</td><td>$" + m.pricePerUnit.toFixed(2) + "</td><td>$" + m.grossAmount.toFixed(4) + "</td></tr>";
+      html += '<table><thead><tr><th>\u6a21\u578b</th><th>\u5185\u542b\u989d\u5ea6</th><th>\u8d85\u51fa\u989d\u5ea6</th><th>\u603b\u8ba1\u91d1\u989d</th><th>\u8d85\u989d\u8d39\u7528</th></tr></thead><tbody>';
+      models.forEach(function (mm) {
+        var included = mm.includedCredits != null ? Number(mm.includedCredits).toFixed(2) : "-";
+        var additional = mm.additionalCredits != null ? Number(mm.additionalCredits).toFixed(2) : "0";
+        var gross = mm.grossAmount != null ? "$" + Number(mm.grossAmount).toFixed(2) : "-";
+        var net = mm.netAmount != null ? "$" + Number(mm.netAmount).toFixed(2) : "$0.00";
+        html += "<tr><td>" + C.escapeHtml(mm.model) + "</td><td>" + included + "</td><td>" + additional + "</td><td>" + gross + "</td><td>" + net + "</td></tr>";
       });
       html += "</tbody></table>";
       modalBody.innerHTML = html;

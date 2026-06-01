@@ -188,23 +188,39 @@ module.exports = function createBillingRouter({ usageStore, teamCache, userMappi
       const items = Array.isArray(data?.usageItems) ? data.usageItems : [];
       const models = {};
       for (const item of items) {
-        const model = item.model || "Unknown";
+        const key = item.sku || item.model || "Unknown";
         const quantity = toNumber(item.netQuantity) || toNumber(item.grossQuantity) || toNumber(item.quantity) || toNumber(item.requests);
-        const amount = item.netAmount != null ? toNumber(item.netAmount) : toNumber(item.grossAmount);
-        if (!models[model]) models[model] = { model, grossQuantity: 0, grossAmount: 0, pricePerUnit: item.pricePerUnit || 0 };
-        models[model].grossQuantity += quantity;
-        models[model].grossAmount += amount;
+        const grossAmount = toNumber(item.grossAmount);
+        const netAmount = toNumber(item.netAmount);
+        if (!models[key]) models[key] = { model: key, quantity: 0, grossAmount: 0, netAmount: 0, pricePerUnit: toNumber(item.pricePerUnit) };
+        models[key].quantity += quantity;
+        models[key].grossAmount += grossAmount;
+        models[key].netAmount += netAmount;
+        if (!models[key].pricePerUnit && item.pricePerUnit) models[key].pricePerUnit = toNumber(item.pricePerUnit);
       }
 
       const sorted = Object.values(models)
-        .sort((a, b) => b.grossQuantity - a.grossQuantity)
-        .map((m) => ({
-          model: m.model,
-          grossQuantity: Math.round(m.grossQuantity * 100) / 100,
-          grossAmount: Math.round(m.grossAmount * 10000) / 10000,
-          pricePerUnit: m.pricePerUnit,
-        }));
-      const totalQty = sorted.reduce((s, m) => s + m.grossQuantity, 0);
+        .sort((a, b) => b.grossAmount - a.grossAmount)
+        .map((m) => {
+          const quantity = Math.round(m.quantity * 100) / 100;
+          const grossAmount = Math.round(m.grossAmount * 10000) / 10000;
+          const netAmount = Math.round(m.netAmount * 10000) / 10000;
+          const additionalCredits = m.pricePerUnit > 0
+            ? Math.round((m.netAmount / m.pricePerUnit) * 100) / 100
+            : 0;
+          const includedCredits = Math.round((quantity - additionalCredits) * 100) / 100;
+          return {
+            model: m.model,
+            quantity,
+            grossQuantity: quantity, // backward-compat alias
+            grossAmount,
+            netAmount,
+            includedCredits,
+            additionalCredits,
+            pricePerUnit: m.pricePerUnit,
+          };
+        });
+      const totalQty = sorted.reduce((s, m) => s + m.quantity, 0);
       const totalAmount = sorted.reduce((s, m) => s + m.grossAmount, 0);
 
       res.json({
