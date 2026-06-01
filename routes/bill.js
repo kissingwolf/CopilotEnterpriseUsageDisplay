@@ -6,7 +6,7 @@ const express = require("express");
 const logger = require("../lib/logger");
 const { PLAN_CONFIG, calcAmount } = require("../lib/billing-config");
 const { githubGetJson, MAX_CONCURRENT_GITHUB } = require("../lib/github-api");
-const { toNumber, pickUser, writeError, buildQueryParams, buildEndpoint } = require("../lib/helpers");
+const { toNumber, pickUser, writeError, buildQueryParams, buildEndpoint, isCopilotBillingItem, normalizeBillingAmount } = require("../lib/helpers");
 const { enumerateDays } = require("../lib/date-utils");
 const { ensureSeatsData } = require("./seats");
 
@@ -122,9 +122,7 @@ function createBillRouter({ usageStore, teamCache, userMappingService, usageRout
   }
 
   function isCopilotPremiumRequestItem(item) {
-    const sku = String(item?.sku || "").toLowerCase();
-    const product = String(item?.product || "").toLowerCase();
-    return /premium[_ ]request/.test(sku) || (product === "copilot" && /premium/.test(sku));
+    return isCopilotBillingItem(item);
   }
 
   async function fetchDirectCostCenterSpentMap(year, month, teamNames) {
@@ -175,7 +173,7 @@ function createBillRouter({ usageStore, teamCache, userMappingService, usageRout
         const items = Array.isArray(data?.usageItems) ? data.usageItems : [];
         const spent = items
           .filter(isCopilotPremiumRequestItem)
-          .reduce((sum, item) => sum + toNumber(item.netAmount), 0);
+          .reduce((sum, item) => sum + normalizeBillingAmount(item).amount, 0);
         byTeam.set(teamName.toLowerCase(), Math.round(spent * 10000) / 10000);
       } catch (err) {
         logger.warn({ team: teamName, err: err && err.message }, "fetchDirectCostCenterSpentMap: failed to load usage summary");
