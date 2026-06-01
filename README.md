@@ -224,7 +224,7 @@ node ./scripts/preflight-check.js --strict
 | BILLING_DAY | 否 | 空 | BILLING_DAY=20 | 账期日期覆盖（主要用于标签/辅助查询） |
 | PRODUCT | 否 | Copilot（项目默认约定） | PRODUCT=Copilot | 传给 usage 查询的产品过滤 |
 | MODEL | 否 | 空 | MODEL=gpt-4o-copilot | 模型过滤 |
-| BILLING_MODEL | 否 | auto | BILLING_MODEL=ai_credits | 计费模型：auto / legacy_pru / ai_credits |
+| BILLING_MODEL | 否 | auto | BILLING_MODEL=ai_credits | 计费模型：auto / legacy_pru / ai_credits。模型排行支持双向回退：无论哪种模式，若主接口返回产品级 SKU，自动尝试另一个接口获取真实模型名 |
 | INCLUDED_QUOTA | 否 | 300 | INCLUDED_QUOTA=300 | Legacy PRU 每用户每周期配额 |
 | AI_CREDIT_PRICE_FALLBACK | 否 | 0.01 | AI_CREDIT_PRICE_FALLBACK=0.0125 | AI Credits 模式单价兜底（USD/credit） |
 | BUSINESS_SEAT_BASE_COST | 否 | 19 | BUSINESS_SEAT_BASE_COST=19 | ranking 金额展示中的 Business 坐席基础成本下限 |
@@ -535,6 +535,13 @@ sudo systemctl reload nginx
 - 提交前建议执行 `git diff` 并搜索 `ghp_`、`github_pat_`、`Authorization`、`Bearer` 等敏感模式，确认没有凭据进入版本库。
 
 ## 更新日志
+
+### v3.4 — 模型使用排行双源回退
+
+- **双源自动回退（双向）** — `/api/billing/models` 端点无论当前计费模式是 `legacy_pru` 还是 `ai_credits`，只要检测到 GitHub API 返回产品级 SKU（如 "Copilot Premium Request"、"Copilot Business"），自动尝试另一个 API 端点获取真实模型名（如 "Claude Sonnet 4.6"、"GPT-5.5"）；若两个接口均返回产品级数据，保留首选结果
+- **计费模式标识** — 模型使用排行弹窗新增计费模式徽章，显示当前数据来源是 "AI Credits 模型维度" 还是 "传统 Premium Request 汇总"
+- **新增 `isLegacyProductSkus` 辅助函数** — 用于检测 GitHub API 返回的 SKU 列表是否均为产品级分类（非模型名），驱动双源回退逻辑
+- **新增测试用例** — 覆盖双向回退、直接 AI Credits 模式、`isLegacyProductSkus` 函数等场景（共 96 个测试用例）
 
 ### v3.3 — AI Credits 模式下模型排行数据源修正
 

@@ -268,7 +268,53 @@ WHERE id NOT IN (SELECT id FROM seats_snapshot ORDER BY fetched_at DESC LIMIT 20
 | --- | --- | --- |
 | `vitest` | ^3.1.3 | 单元测试框架 |
 
-## 八、后续优化方向
+## 八、模型使用排行双源回退修复
+
+### 8.1 问题背景
+
+GitHub Copilot 企业版存在两套计费口径：
+- **Legacy PRU** (Premium Request Usage)：旧版接口，按“产品分类”聚合，`sku` 字段为 "Copilot Premium Request"、"Copilot Business" 等产品级名称，不含具体 AI 模型信息。
+- **AI Credits**：新版 enhanced billing 接口，`sku` 字段为真实模型名，如 "Claude Sonnet 4.6"、"GPT-5.5"。
+
+当企业已迁移到 AI Credits 计费模式，但查询账期早于硬编码阈值（2026-06）时，系统仍调用旧版 API，导致模型使用排行显示产品分类名而非真实模型名。
+
+### 8.2 解决方案：双向回退
+
+在 `/api/billing/models` 端点实现自动检测与双向回退：
+
+1. 按 `resolveBillingModel()` 结果调用首选 API
+2. 解析返回的 `usageItems`，提取所有 `sku` 值
+3. 用 `isLegacyProductSkus()` 检测是否均为产品级关键词
+4. 若检测到产品级 SKU（无论当前是 `legacy_pru` 还是 `ai_credits` 模式），自动尝试另一个 API 端点
+5. 若备选端点返回真实模型名，则切换使用；若两者均为产品级，保留首选结果
+
+**关键代码** (`routes/billing.js`)：
+```javascript
+if (items.length > 0) {
+  const skus = items.map((item) => item.sku || item.model || "Unknown");
+  if (isLegacyProductSkus(skus)) {
+    // Try the alternative endpoint (bidirectional)
+    const altEndpoint = billingModel === "ai_credits" ? buildEndpoint() : buildBillingUsageEndpoint("report");
+    const altData = await githubGetJson(altEndpoint.path, params).catch(() => null);
+    const altItems = Array.isArray(altData?.usageItems) ? altData.usageItems : [];
+    if (altItems.length > 0) {
+      const altSkus = altItems.map((item) => item.sku || item.model || "Unknown");
+      if (!isLegacyProductSkus(altSkus)) {
+        billingModel = billingModel === "ai_credits" ? "legacy_pru" : "ai_credits";
+        items = altItems;
+      }
+    }
+  }
+}
+```
+
+### 8.3 前端计费模式标识
+
+弹窗新增计费模式徽章，让用户知道数据来源：
+- `ai_credits` 模式：绿色徽章 "AI Credits 模型维度"
+- `legacy_pru` 模式：黄色徽章 "传统 Premium Request 汇总"
+
+## 九、后续优化方向
 
 以下为本次重构范围外、可在后续迭代中考虑的改进：
 

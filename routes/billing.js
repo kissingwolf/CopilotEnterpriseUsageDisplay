@@ -10,7 +10,7 @@ const {
   AI_CREDIT_PRICE_FALLBACK,
 } = require("../lib/billing-config");
 const { githubGetJson, invalidateCacheByPrefix } = require("../lib/github-api");
-const { toNumber, writeError, buildEndpoint, buildBillingUsageEndpoint, aggregateCopilotBillingItems } = require("../lib/helpers");
+const { toNumber, isLegacyProductSkus, writeError, buildEndpoint, buildBillingUsageEndpoint, aggregateCopilotBillingItems } = require("../lib/helpers");
 const { ensureSeatsData, fetchCopilotSeats } = require("./seats");
 
 module.exports = function createBillingRouter({ usageStore, teamCache, userMappingService }) {
@@ -206,18 +206,46 @@ module.exports = function createBillingRouter({ usageStore, teamCache, userMappi
       const nowM = new Date();
       const year = req.query.year || requiredEnv("BILLING_YEAR") || String(nowM.getUTCFullYear());
       const month = req.query.month || requiredEnv("BILLING_MONTH") || String(nowM.getUTCMonth() + 1);
-      const billingModel = resolveBillingModel({ year, month });
-      const endpoint = billingModel === "ai_credits" ? buildBillingUsageEndpoint("report") : buildEndpoint();
+      let billingModel = resolveBillingModel({ year, month });
+
       const params = new URLSearchParams();
       if (year) params.set("year", String(year));
       if (month) params.set("month", String(month));
       params.set("product", "Copilot");
 
-      const data = await githubGetJson(endpoint.path, params);
-      const items = Array.isArray(data?.usageItems) ? data.usageItems : [];
+      // Call the preferred API based on billing model
+      let endpoint = billingModel === "ai_credits" ? buildBillingUsageEndpoint("report") : buildEndpoint();
+      let data = await githubGetJson(endpoint.path, params);
+      let items = Array.isArray(data?.usageItems) ? data.usageItems : [];
+
+      // Bidirectional dual-source fallback: regardless of which mode was chosen,
+      // if the primary API only yields product-level keys (not real model names),
+      // try the other API to see if it provides model-level data.
+      // NOTE: prefer `model` over `sku` because the legacy /premium_request/usage
+      // endpoint always returns sku="Copilot Premium Request" while the real AI
+      // model name lives in the `model` field (e.g. "Auto: Claude Haiku 4.5").
+      const keyOf = (item) => item.model || item.sku || "Unknown";
+      if (items.length > 0) {
+        const keys = items.map(keyOf);
+        if (isLegacyProductSkus(keys)) {
+          // Try the alternative endpoint
+          const altEndpoint = billingModel === "ai_credits" ? buildEndpoint() : buildBillingUsageEndpoint("report");
+          const altData = await githubGetJson(altEndpoint.path, params).catch(() => null);
+          const altItems = Array.isArray(altData?.usageItems) ? altData.usageItems : [];
+          if (altItems.length > 0) {
+            const altKeys = altItems.map(keyOf);
+            if (!isLegacyProductSkus(altKeys)) {
+              // Alternative has real model names — use it
+              billingModel = billingModel === "ai_credits" ? "legacy_pru" : "ai_credits";
+              items = altItems;
+            }
+            // If both APIs return product-level keys, keep the primary result
+          }
+        }
+      }
       const models = {};
       for (const item of items) {
-        const key = item.sku || item.model || "Unknown";
+        const key = keyOf(item);
         const quantity = toNumber(item.netQuantity) || toNumber(item.grossQuantity) || toNumber(item.quantity) || toNumber(item.requests);
         const grossAmount = toNumber(item.grossAmount);
         const netAmount = toNumber(item.netAmount);

@@ -655,7 +655,10 @@
         }
       }
       var models = data.models || [];
-      var html = fallbackNotice + "<p>" + data.year + "\u5e74" + data.month + "\u6708\u3000\u603b\u8bf7\u6c42: <strong>" + data.totalQuantity + "</strong>\u3000\u603b\u91d1\u989d: <strong>$" + data.totalAmount.toFixed(4) + "</strong></p>";
+      var modelSourceBadge = data.billingModel === "ai_credits"
+        ? '<span style="display:inline-block;font-size:11px;padding:2px 8px;border-radius:10px;background:#d4edda;color:#155724;margin-left:8px">AI Credits \u6a21\u578b\u7ef4\u5ea6</span>'
+        : '<span style="display:inline-block;font-size:11px;padding:2px 8px;border-radius:10px;background:#fff3cd;color:#856404;margin-left:8px">\u4f20\u7edf Premium Request \u6c47\u603b</span>';
+      var html = fallbackNotice + "<p>" + data.year + "\u5e74" + data.month + "\u6708\u3000\u603b\u8bf7\u6c42: <strong>" + data.totalQuantity + "</strong>\u3000\u603b\u91d1\u989d: <strong>$" + data.totalAmount.toFixed(4) + "</strong>" + modelSourceBadge + "</p>";
       if (!models.length) {
         modalBody.innerHTML = html + '<div style="color:var(--muted)">\u5f53\u524d\u8d26\u671f\u6682\u65e0\u6309\u6a21\u578b\u7684\u4f7f\u7528\u660e\u7ec6\u6570\u636e\uff0c\u603b\u4f53\u91d1\u989d\u8bf7\u67e5\u770b\u201c\u6574\u4f53\u8d26\u5355\u6c47\u603b\u201d\u3002</div>';
         return;
