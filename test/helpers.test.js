@@ -250,3 +250,25 @@ describe("quota usage buckets", () => {
     expect(buckets["配额使用 大于 200%"].map((u) => u.user)).toEqual(["erin"]);
   });
 });
+
+describe("isLegacyProductSkus", () => {
+  it("returns true for product-level Copilot SKUs", () => {
+    expect(helpers.isLegacyProductSkus(["Copilot Premium Request", "Copilot Business"])).toBe(true);
+    expect(helpers.isLegacyProductSkus(["Copilot Enterprise"])).toBe(true);
+  });
+
+  it("returns false for actual AI model names", () => {
+    expect(helpers.isLegacyProductSkus(["Claude Sonnet 4.6", "GPT-5.5"])).toBe(false);
+    expect(helpers.isLegacyProductSkus(["Auto: GPT-5.3-Codex"])).toBe(false);
+  });
+
+  it("returns false for empty or missing arrays", () => {
+    expect(helpers.isLegacyProductSkus([])).toBe(false);
+    expect(helpers.isLegacyProductSkus(null)).toBe(false);
+    expect(helpers.isLegacyProductSkus(undefined)).toBe(false);
+  });
+
+  it("returns false when mixed with legacy and model names", () => {
+    expect(helpers.isLegacyProductSkus(["Copilot Business", "Claude Sonnet 4.6"])).toBe(false);
+  });
+});
