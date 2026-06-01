@@ -214,31 +214,37 @@ node ./scripts/preflight-check.js --strict
 
 ## 环境变量说明
 
-| 变量 | 必填 | 说明 |
-| --- | --- | --- |
-| `GITHUB_TOKEN` | 是 | GitHub PAT，需 Enterprise billing 读取权限 |
-| `ENTERPRISE_SLUG` | 是 | Enterprise slug（如 `YourEnterprise-slug`） |
-| `BILLING_YEAR` | 否 | 账单年份（默认取当前年） |
-| `BILLING_MONTH` | 否 | 账单月份（默认取当前月） |
-| `BILLING_DAY` | 否 | 可选，指定具体日期 |
-| `PRODUCT` | 否 | 产品过滤，默认 `Copilot` |
-| `MODEL` | 否 | 可选，按模型过滤 |
-| `GITHUB_API_VERSION` | 否 | GitHub REST API 版本请求头，默认 `2026-03-10`；若 GitHub 后续发布新版本，可通过该变量切换，无需改代码 |
-| `BILLING_MODEL` | 否 | Copilot 计费模型：`auto`（默认，2026-06 起切到 AI Credits）、`legacy_pru`（Premium Request 旧口径）、`ai_credits`（usage-based billing / GitHub AI Credits） |
-| `INCLUDED_QUOTA` | 否 | 每用户每周期包含配额基线，默认 `300`；legacy 用作 requests 基线，AI Credits 模式可作为积分基线 |
-| `AI_CREDIT_PRICE_FALLBACK` | 否 | AI Credits 模式下 API 未返回单价/金额时的本地兜底单价，默认 `0.01`（USD/积分） |
-| `BUSINESS_SEAT_BASE_COST` | 否 | 首页“金额(USD)”展示使用的 Business 基础坐席费下限，默认 `19` |
-| `ENTERPRISE_SEAT_BASE_COST` | 否 | 首页“金额(USD)”展示使用的 Enterprise 基础坐席费下限，默认 `39` |
-| `CACHE_TTL` | 否 | API 响应在前端的缓存时长（秒），默认 `300`（5 分钟），缓存期内采用 SWR 策略无缝展示 |
-| `GITHUB_MAX_CONCURRENT` | 否 | GitHub API 并发请求上限，默认 `3`，防止因瞬时并发触发 Secondary Rate Limit |
-| `GITHUB_MAX_RETRIES` | 否 | GitHub API 请求遇错和被限流时的最大重试次数，默认 `3` |
-| `GITHUB_API_BASE` | 否 | API 地址，默认 `https://api.github.com` |
-| `PORT` | 否 | 服务端口，默认 `3000` |
-| `SCHED_DISABLED` | 否 | 设为 `true` 可关闭内置自动刷新调度器（默认开启，多副本部署时可在其他副本上关闭） |
-| `SCHED_DAILY_TIMES` | 否 | 逗号分隔的本地时间 `HH:MM` 列表，默认 `03:00,12:00` |
-| `SCHED_BACKFILL_DAYS` | 否 | 调度器每次运行时除今天外额外回填的天数，默认 `2`（即今天+昨天+前天） |
-| `SCHED_STARTUP_DELAY_MS` | 否 | 启动后首次刷今天数据的延迟毫秒数，默认 `5000` |
-| `COPILOT_START_DATE` | 否 | Copilot 启用日期（`YYYY-MM-DD`）。用于月度周期聚合时跳过启用前的日期，避免"覆盖完整性"误判 |
+| 变量 | 必填 | 默认值 | 设置示例 | 说明 |
+| --- | --- | --- | --- | --- |
+| GITHUB_TOKEN | 是 | 无（必须设置） | GITHUB_TOKEN=github_pat_xxx | GitHub PAT，需具备 enterprise billing 读取权限 |
+| ENTERPRISE_SLUG | 条件必填（与 ORG_NAME 二选一） | 空 | ENTERPRISE_SLUG=your-enterprise | Enterprise 作用域（推荐） |
+| ORG_NAME | 条件必填（与 ENTERPRISE_SLUG 二选一） | 空 | ORG_NAME=your-org | 组织作用域（未使用 enterprise 时） |
+| BILLING_YEAR | 否 | 当前 UTC 年 | BILLING_YEAR=2026 | 账期年份覆盖 |
+| BILLING_MONTH | 否 | 当前 UTC 月 | BILLING_MONTH=6 | 账期月份覆盖（1-12） |
+| BILLING_DAY | 否 | 空 | BILLING_DAY=20 | 账期日期覆盖（主要用于标签/辅助查询） |
+| PRODUCT | 否 | Copilot（项目默认约定） | PRODUCT=Copilot | 传给 usage 查询的产品过滤 |
+| MODEL | 否 | 空 | MODEL=gpt-4o-copilot | 模型过滤 |
+| BILLING_MODEL | 否 | auto | BILLING_MODEL=ai_credits | 计费模型：auto / legacy_pru / ai_credits |
+| INCLUDED_QUOTA | 否 | 300 | INCLUDED_QUOTA=300 | Legacy PRU 每用户每周期配额 |
+| AI_CREDIT_PRICE_FALLBACK | 否 | 0.01 | AI_CREDIT_PRICE_FALLBACK=0.0125 | AI Credits 模式单价兜底（USD/credit） |
+| BUSINESS_SEAT_BASE_COST | 否 | 19 | BUSINESS_SEAT_BASE_COST=19 | ranking 金额展示中的 Business 坐席基础成本下限 |
+| ENTERPRISE_SEAT_BASE_COST | 否 | 39 | ENTERPRISE_SEAT_BASE_COST=39 | ranking 金额展示中的 Enterprise 坐席基础成本下限 |
+| COPILOT_START_DATE | 否 | 空 | COPILOT_START_DATE=2026-04-20 | Copilot 启用日期（YYYY-MM-DD），用于避免周期完整性误判 |
+| PORT | 否 | 3000 | PORT=3001 | HTTP 端口 |
+| CACHE_TTL | 否 | 300 | CACHE_TTL=600 | 内存刷新缓存 TTL（秒） |
+| GITHUB_API_BASE | 否 | https://api.github.com | GITHUB_API_BASE=https://api.<subdomain>.ghe.com | GitHub API 基地址 |
+| GITHUB_API_VERSION | 否 | 2026-03-10 | GITHUB_API_VERSION=2026-06-01 | GitHub REST API 版本请求头 |
+| GITHUB_MAX_CONCURRENT | 否 | 3 | GITHUB_MAX_CONCURRENT=5 | GitHub API 最大并发数 |
+| GITHUB_MAX_RETRIES | 否 | 3 | GITHUB_MAX_RETRIES=5 | GitHub API 限流/瞬时错误最大重试次数 |
+| SCHED_DISABLED | 否 | false | SCHED_DISABLED=true | 是否关闭调度器 |
+| SCHED_DAILY_TIMES | 否 | 03:00,12:00 | SCHED_DAILY_TIMES=02:00,08:00,20:00 | 本地时间调度点（HH:MM，逗号分隔） |
+| SCHED_BACKFILL_DAYS | 否 | 2 | SCHED_BACKFILL_DAYS=3 | 每次调度额外回填天数（今天始终包含） |
+| SCHED_STARTUP_DELAY_MS | 否 | 5000 | SCHED_STARTUP_DELAY_MS=15000 | 启动后首次刷新延迟（毫秒） |
+| NODE_ENV | 否 | development（未设置时） | NODE_ENV=production | Node 运行环境 |
+| LOG_LEVEL | 否 | 开发环境默认 debug，生产环境默认 info | LOG_LEVEL=info | 日志级别：trace / debug / info / warn / error |
+| USER_LIST | 否（兼容保留） | 空 | USER_LIST=alice,bob,charlie | 兼容占位变量，当前代码不主动读取 |
+| ORG_LIST | 否（兼容保留） | 空 | ORG_LIST=org-a,org-b | 兼容占位变量，当前代码不主动读取 |
+| MAX_USERS | 否（兼容保留） | 空 | MAX_USERS=300 | 兼容占位变量，当前代码不主动读取 |
 
 ## 缓存架构
 
