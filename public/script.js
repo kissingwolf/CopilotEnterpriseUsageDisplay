@@ -34,6 +34,8 @@
   var sortKey = "requests";
   var sortAsc = false;
   var includedQuota = 300;
+  var billingModel = "legacy_pru";
+  var aiCreditUnitPrice = 0.01;
   var selectedTeams = null;
   var latestMetaText = "尚未刷新数据";
   var PAGE_SIZE = 15;
@@ -120,14 +122,14 @@
         "<td>" + row.requests + "</td>" +
         "<td>" + buildCycleBar(row.cycleRequests, includedQuota) + "</td>" +
         "<td>" + row.percentage.toFixed(2) + "%</td>" +
-        "<td>" + row.amount.toFixed(4) + "</td></tr>";
+        "<td>" + row.amount.toFixed(2) + "</td></tr>";
     }
     return "<tr>" +
       "<td>" + C.escapeHtml(displayName) + "</td>" +
       "<td>" + C.escapeHtml(row.team || "-") + "</td>" +
       "<td>" + buildCycleBar(row.requests, includedQuota) + "</td>" +
       "<td>" + row.percentage.toFixed(2) + "%</td>" +
-      "<td>" + row.amount.toFixed(4) + "</td></tr>";
+      "<td>" + row.amount.toFixed(2) + "</td></tr>";
   }
 
   function renderRows(sortedRows, isSingle) {
@@ -193,8 +195,13 @@
     if (!currentData) return;
     var rows = Array.isArray(currentData.ranking) ? currentData.ranking : [];
     var isSingle = currentData.queryMode === "single";
+    var isAiCredits = currentData.billingModel === "ai_credits";
     var colCount = isSingle ? 6 : 5;
     if (currentData.includedQuota) includedQuota = currentData.includedQuota;
+    billingModel = currentData.billingModel || "legacy_pru";
+    if (typeof currentData.aiCreditUnitPrice === "number" && currentData.aiCreditUnitPrice > 0) {
+      aiCreditUnitPrice = currentData.aiCreditUnitPrice;
+    }
     rebuildTeamFilter(rows);
     if (selectedTeams) {
       rows = rows.filter(function (r) {
@@ -209,19 +216,24 @@
 
     var theadTr = document.querySelector("table thead tr");
     if (isSingle) {
+      var singleDailyLabel = isAiCredits ? "当日积分" : "当日请求量";
+      var singleCycleLabel = isAiCredits ? "本周期积分" : "本周期请求量";
+      var singlePctLabel = isAiCredits ? "AI credits(%)" : "Premium requests(%)";
       theadTr.innerHTML =
         '<th data-sort="user">\u7528\u6237 <span class="sort-arrow"></span></th>' +
         '<th data-sort="team">Team <span class="sort-arrow"></span></th>' +
-        '<th data-sort="requests">\u5f53\u65e5\u8bf7\u6c42\u91cf <span class="sort-arrow"></span></th>' +
-        '<th data-sort="cycleRequests">\u672c\u5468\u671f\u8bf7\u6c42\u91cf <span class="sort-arrow"></span></th>' +
-        '<th data-sort="percentage">Premium requests(%) <span class="sort-arrow"></span></th>' +
+        '<th data-sort="requests">' + singleDailyLabel + ' <span class="sort-arrow"></span></th>' +
+        '<th data-sort="cycleRequests">' + singleCycleLabel + ' <span class="sort-arrow"></span></th>' +
+        '<th data-sort="percentage">' + singlePctLabel + ' <span class="sort-arrow"></span></th>' +
         '<th data-sort="amount">\u91d1\u989d(USD) <span class="sort-arrow"></span></th>';
     } else {
+      var rangeCycleLabel = isAiCredits ? "本周期积分" : "本周期请求量";
+      var rangePctLabel = isAiCredits ? "AI credits(%)" : "Premium requests(%)";
       theadTr.innerHTML =
         '<th data-sort="user">\u7528\u6237 <span class="sort-arrow"></span></th>' +
         '<th data-sort="team">Team <span class="sort-arrow"></span></th>' +
-        '<th data-sort="requests">\u672c\u5468\u671f\u8bf7\u6c42\u91cf <span class="sort-arrow"></span></th>' +
-        '<th data-sort="percentage">Premium requests(%) <span class="sort-arrow"></span></th>' +
+        '<th data-sort="requests">' + rangeCycleLabel + ' <span class="sort-arrow"></span></th>' +
+        '<th data-sort="percentage">' + rangePctLabel + ' <span class="sort-arrow"></span></th>' +
         '<th data-sort="amount">\u91d1\u989d(USD) <span class="sort-arrow"></span></th>';
     }
     if (!rows.length) {
@@ -282,8 +294,9 @@
     var ratio = quota > 0 ? value / quota : 0;
     var pct = Math.min(ratio * 100, 100);
     var level = ratio >= 1 ? "level-danger" : ratio >= 0.75 ? "level-warn" : "level-normal";
+    var unitLabel = billingModel === "ai_credits" ? "积分" : "请求";
     var overTag = ratio > 1 ? ' <span class="cycle-bar-over">(超额)</span>' : '';
-    return '<div class="cycle-bar"><span class="cycle-bar-label">' + value + '/' + quota + overTag + '</span>' +
+    return '<div class="cycle-bar"><span class="cycle-bar-label">' + value + '/' + quota + ' ' + unitLabel + overTag + '</span>' +
       '<div class="cycle-bar-track"><div class="cycle-bar-fill ' + level + '" style="width:' + pct.toFixed(1) + '%"></div></div></div>';
   }
 
@@ -519,11 +532,17 @@
 
     if (isAiCredits) {
       var creditsPct = data.includedCreditsPool > 0 ? (data.copilotEstimatedCredits / data.includedCreditsPool * 100).toFixed(1) : "0";
+        var creditUnitPrice = typeof data.aiCreditUnitPrice === "number" && data.aiCreditUnitPrice > 0 ? data.aiCreditUnitPrice : aiCreditUnitPrice;
+        var creditUnitPriceSource = data.aiCreditUnitPriceSource === "api-pricePerUnit" ? "API 单价"
+          : data.aiCreditUnitPriceSource === "api-pricePerUnit-multi" ? "API 多模型单价(取首个)"
+            : "env fallback";
       html += "<h3>AI Credits \u4F7F\u7528\u60C5\u51B5\uFF08" + C.escapeHtml(monthLabel) + "\uFF09</h3><table><thead><tr><th>\u9879\u76EE</th><th>\u503C</th></tr></thead><tbody>";
       html += "<tr><td>\u8BA1\u8D39\u6A21\u5F0F</td><td>AI Credits / usage-based billing</td></tr>";
       html += "<tr><td>\u6C60\u5316\u5305\u542B\u989D\u5EA6</td><td>" + data.includedCreditsPool + " AI Credits (" + data.totalSeats + " \u5E2D\u4F4D)</td></tr>";
+        html += "<tr><td>\u79EF\u5206\u5355\u4EF7</td><td>$" + Number(creditUnitPrice).toFixed(4) + "/\u79EF\u5206" +
+          " <span style='color:var(--muted);font-size:0.8em'>(" + C.escapeHtml(creditUnitPriceSource) + ")</span></td></tr>";
       html += "<tr><td>Copilot \u6D88\u8D39\u91D1\u989D</td><td>$" + data.copilotNetAmount.toFixed(4) + "</td></tr>";
-      html += "<tr><td>\u6298\u7B97 AI Credits</td><td>" + data.copilotEstimatedCredits.toFixed(2) + " credits</td></tr>";
+        html += "<tr><td>\u6298\u7B97 AI Credits</td><td>" + data.copilotEstimatedCredits.toFixed(2) + " \u79EF\u5206</td></tr>";
       html += "<tr><td>\u989D\u5EA6\u4F7F\u7528\u7387\uFF08\u6309\u91D1\u989D\u6298\u7B97\uFF09</td><td>" + creditsPct + "%</td></tr>";
       html += "<tr><td>\u91D1\u989D\u6765\u6E90</td><td>" + C.escapeHtml((data.amountSources || []).join(", ") || "-") + "</td></tr>";
       html += "</tbody></table>";
@@ -622,17 +641,32 @@
     try {
       await forceRefreshSeatsCache();
       var now = new Date();
-      var data = await C.apiFetchJson("/api/billing/models?year=" + now.getUTCFullYear() + "&month=" + (now.getUTCMonth() + 1), {}, "获取模型排行失败");
+      var y = now.getUTCFullYear();
+      var m = now.getUTCMonth() + 1;
+      var data = await C.apiFetchJson("/api/billing/models?year=" + y + "&month=" + m, {}, "获取模型排行失败");
+      var fallbackNotice = "";
+      if (!(data.models || []).length) {
+        var prevY = m === 1 ? y - 1 : y;
+        var prevM = m === 1 ? 12 : m - 1;
+        var prev = await C.apiFetchJson("/api/billing/models?year=" + prevY + "&month=" + prevM, {}, "获取上月模型排行失败");
+        if ((prev.models || []).length) {
+          fallbackNotice = '<div style="color:var(--muted);margin-bottom:8px">\u5f53\u6708\u8d26\u671f\u6682\u65e0\u6570\u636e\uff0c\u5df2\u5207\u6362\u5230 ' + prev.year + ' \u5e74 ' + prev.month + ' \u6708\u3002</div>';
+          data = prev;
+        }
+      }
       var models = data.models || [];
-      var html = "<p>" + data.year + "\u5e74" + data.month + "\u6708\u3000\u603b\u8bf7\u6c42: <strong>" + data.totalQuantity + "</strong>\u3000\u603b\u91d1\u989d: <strong>$" + data.totalAmount.toFixed(4) + "</strong></p>";
+      var html = fallbackNotice + "<p>" + data.year + "\u5e74" + data.month + "\u6708\u3000\u603b\u8bf7\u6c42: <strong>" + data.totalQuantity + "</strong>\u3000\u603b\u91d1\u989d: <strong>$" + data.totalAmount.toFixed(4) + "</strong></p>";
       if (!models.length) {
         modalBody.innerHTML = html + '<div style="color:var(--muted)">\u5f53\u524d\u8d26\u671f\u6682\u65e0\u6309\u6a21\u578b\u7684\u4f7f\u7528\u660e\u7ec6\u6570\u636e\uff0c\u603b\u4f53\u91d1\u989d\u8bf7\u67e5\u770b\u201c\u6574\u4f53\u8d26\u5355\u6c47\u603b\u201d\u3002</div>';
         return;
       }
-      html += '<table><thead><tr><th>\u6a21\u578b</th><th>\u8bf7\u6c42\u91cf</th><th>\u5360\u6bd4(%)</th><th>\u5355\u4ef7</th><th>\u91d1\u989d(USD)</th></tr></thead><tbody>';
-      models.forEach(function (m) {
-        var pct = data.totalQuantity > 0 ? (m.grossQuantity / data.totalQuantity * 100).toFixed(2) : "0.00";
-        html += "<tr><td>" + C.escapeHtml(m.model) + "</td><td>" + m.grossQuantity + "</td><td>" + pct + "%</td><td>$" + m.pricePerUnit.toFixed(2) + "</td><td>$" + m.grossAmount.toFixed(4) + "</td></tr>";
+      html += '<table><thead><tr><th>\u6a21\u578b</th><th>\u5185\u542b\u989d\u5ea6</th><th>\u8d85\u51fa\u989d\u5ea6</th><th>\u603b\u8ba1\u91d1\u989d</th><th>\u8d85\u989d\u8d39\u7528</th></tr></thead><tbody>';
+      models.forEach(function (mm) {
+        var included = mm.includedCredits != null ? Number(mm.includedCredits).toFixed(2) : "-";
+        var additional = mm.additionalCredits != null ? Number(mm.additionalCredits).toFixed(2) : "0";
+        var gross = mm.grossAmount != null ? "$" + Number(mm.grossAmount).toFixed(2) : "-";
+        var net = mm.netAmount != null ? "$" + Number(mm.netAmount).toFixed(2) : "$0.00";
+        html += "<tr><td>" + C.escapeHtml(mm.model) + "</td><td>" + included + "</td><td>" + additional + "</td><td>" + gross + "</td><td>" + net + "</td></tr>";
       });
       html += "</tbody></table>";
       modalBody.innerHTML = html;

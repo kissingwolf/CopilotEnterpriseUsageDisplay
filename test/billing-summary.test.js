@@ -172,9 +172,9 @@ describe("GET /api/billing/models", () => {
     process.env.BILLING_MODEL = "ai_credits";
     mocks.githubGetJson.mockResolvedValue({
       usageItems: [
-        { product: "Copilot", model: "GPT-5.5", netQuantity: 12.345, netAmount: 1.23456, pricePerUnit: 0.1 },
-        { product: "Copilot", model: "Claude Opus 4.7", netQuantity: 20, netAmount: 2, pricePerUnit: 0.1 },
-        { product: "Copilot", model: "GPT-5.5", grossQuantity: 7, grossAmount: 0.7, pricePerUnit: 0.1 },
+        { product: "Copilot", model: "GPT-5.5", netQuantity: 12.345, grossAmount: 1.23456, netAmount: 1.23456, pricePerUnit: 0.1 },
+        { product: "Copilot", model: "Claude Opus 4.7", netQuantity: 20, grossAmount: 2, netAmount: 2, pricePerUnit: 0.1 },
+        { product: "Copilot", model: "GPT-5.5", grossQuantity: 7, grossAmount: 0.7, netAmount: 0, pricePerUnit: 0.1 },
       ],
     });
 
@@ -187,8 +187,8 @@ describe("GET /api/billing/models", () => {
       expect(response.status).toBe(200);
       expect(body.billingModel).toBe("ai_credits");
       expect(body.models).toEqual([
-        { model: "Claude Opus 4.7", grossQuantity: 20, grossAmount: 2, pricePerUnit: 0.1 },
-        { model: "GPT-5.5", grossQuantity: 19.35, grossAmount: 1.9346, pricePerUnit: 0.1 },
+        { model: "Claude Opus 4.7", quantity: 20, grossQuantity: 20, grossAmount: 2, netAmount: 2, includedCredits: 0, additionalCredits: 20, pricePerUnit: 0.1 },
+        { model: "GPT-5.5", quantity: 19.35, grossQuantity: 19.35, grossAmount: 1.9346, netAmount: 1.2346, includedCredits: 7, additionalCredits: 12.35, pricePerUnit: 0.1 },
       ]);
       expect(body.totalQuantity).toBe(39.35);
       expect(body.totalAmount).toBe(3.9346);
@@ -219,7 +219,7 @@ describe("GET /api/billing/models", () => {
       expect(response.status).toBe(200);
       expect(body.billingModel).toBe("legacy_pru");
       expect(body.models).toEqual([
-        { model: "GPT-5.5", grossQuantity: 10, grossAmount: 0.4, pricePerUnit: 0.04 },
+        { model: "GPT-5.5", quantity: 10, grossQuantity: 10, grossAmount: 0.4, netAmount: 0, includedCredits: 10, additionalCredits: 0, pricePerUnit: 0.04 },
       ]);
     });
 

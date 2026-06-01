@@ -4,13 +4,13 @@
 
 ## 功能特性
 
-- **每用户用量排行** — 按日期或日期范围查询每个用户的 Premium Request 请求量
+- **每用户用量排行** — 按日期或日期范围查询每个用户的用量（legacy: 请求量 / AI Credits: 积分）
 - **默认范围查询模式** — 首页默认切换为“按日期范围查询”
-- **当日 / 本周期双列展示** — 按日期查询时同时显示当日请求量和本月累计请求量
-- **本周期进度条展示** — “本周期请求量”按配额基线显示进度条，支持超额标记
+- **当日 / 本周期双列展示** — 按日期查询时同时显示当日用量和本月累计用量（随 billing model 自动切换单位）
+- **本周期进度条展示** — “本周期用量”按配额基线显示进度条，支持超额标记
 - **Team 多选筛选** — 支持下拉复选 Team，默认全选，可按 Team 过滤表格数据
-- **Premium Requests (%)** — 基于订阅计划额度计算（Business = 300 / Enterprise = 1000）
-- **费用估算** — 额度内显示订阅费（Business $19），超额按 $0.04/request 累加
+- **用量占比(%)** — 基于配额基线计算，legacy 显示 requests%，AI Credits 显示 credits%
+- **费用估算** — legacy 沿用 $0.04/request；AI Credits 模式优先使用 GitHub API `amount/netAmount`，缺失时才使用可选 fallback 单价
 - **平滑刷新体验** — 采用 SWR (Stale-While-Revalidate) 缓存策略，刷新时优先显示缓存并后台静默更新，配合骨架屏 (Skeleton Screen) 消除长时间白屏的感知等待。
 - **防止限流与并发控制** — 内置 GitHub API 调用并发队列和请求防抖 (Single-flight)；遇到 API 速率限制 (Rate Limit) 时会自动进行指数退避重试，向前端返回友好的恢复时间提示。
 - **分批渲染大表** — 处理海量用量数据时采用 requestAnimationFrame 进行 chunked 渲染，避免卡死浏览器主线程。
@@ -222,7 +222,10 @@ node ./scripts/preflight-check.js --strict
 | `MODEL` | 否 | 可选，按模型过滤 |
 | `GITHUB_API_VERSION` | 否 | GitHub REST API 版本请求头，默认 `2026-03-10`；若 GitHub 后续发布新版本，可通过该变量切换，无需改代码 |
 | `BILLING_MODEL` | 否 | Copilot 计费模型：`auto`（默认，2026-06 起切到 AI Credits）、`legacy_pru`（Premium Request 旧口径）、`ai_credits`（usage-based billing / GitHub AI Credits） |
-| `INCLUDED_QUOTA` | 否 | 每用户每周期包含请求配额，默认 `300`；仅 legacy PRU 模式用于进度条基线和百分比计算 |
+| `INCLUDED_QUOTA` | 否 | 每用户每周期包含配额基线，默认 `300`；legacy 用作 requests 基线，AI Credits 模式可作为积分基线 |
+| `AI_CREDIT_PRICE_FALLBACK` | 否 | AI Credits 模式下 API 未返回单价/金额时的本地兜底单价，默认 `0.01`（USD/积分） |
+| `BUSINESS_SEAT_BASE_COST` | 否 | 首页“金额(USD)”展示使用的 Business 基础坐席费下限，默认 `19` |
+| `ENTERPRISE_SEAT_BASE_COST` | 否 | 首页“金额(USD)”展示使用的 Enterprise 基础坐席费下限，默认 `39` |
 | `CACHE_TTL` | 否 | API 响应在前端的缓存时长（秒），默认 `300`（5 分钟），缓存期内采用 SWR 策略无缝展示 |
 | `GITHUB_MAX_CONCURRENT` | 否 | GitHub API 并发请求上限，默认 `3`，防止因瞬时并发触发 Secondary Rate Limit |
 | `GITHUB_MAX_RETRIES` | 否 | GitHub API 请求遇错和被限流时的最大重试次数，默认 `3` |

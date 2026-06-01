@@ -4,7 +4,14 @@
 const express = require("express");
 const { LRUCache } = require("lru-cache");
 const logger = require("../lib/logger");
-const { requiredEnv, INCLUDED_QUOTA, PLAN_CONFIG, calcAmount } = require("../lib/billing-config");
+const {
+  requiredEnv,
+  INCLUDED_QUOTA,
+  AI_CREDIT_PRICE_FALLBACK,
+  PLAN_CONFIG,
+  calcAmount,
+  resolveBillingModel,
+} = require("../lib/billing-config");
 const { githubGetJson } = require("../lib/github-api");
 const { toNumber, pickUser, writeError, buildQueryParams, buildEndpoint } = require("../lib/helpers");
 const { enumerateDays } = require("../lib/date-utils");
@@ -22,6 +29,7 @@ module.exports = function createUsageRouter({ usageStore, teamCache, userMapping
   const state = {
     fetchedAt: null, ranking: [], source: null,
     rawItemsCount: 0, mode: "direct", queryMode: "default",
+    billingModel: "legacy_pru", aiCreditUnitPrice: AI_CREDIT_PRICE_FALLBACK,
   };
 
   /* ── Aggregation helpers ── */
@@ -33,9 +41,11 @@ module.exports = function createUsageRouter({ usageStore, teamCache, userMapping
       const user = pickUser(item);
       const requests = toNumber(item.netQuantity) || toNumber(item.grossQuantity) || toNumber(item.quantity) || toNumber(item.requests);
       const amount = toNumber(item.netAmount) || toNumber(item.grossAmount) || toNumber(item.amount);
-      const current = byUser.get(user) || { user, requests: 0, amount: 0 };
+      const hasAmount = item?.netAmount != null || item?.grossAmount != null || item?.amount != null;
+      const current = byUser.get(user) || { user, requests: 0, amount: 0, hasAmount: false };
       current.requests += requests;
       current.amount += amount;
+      current.hasAmount = current.hasAmount || hasAmount;
       byUser.set(user, current);
     }
     const results = Array.from(byUser.values())
@@ -45,6 +55,7 @@ module.exports = function createUsageRouter({ usageStore, teamCache, userMapping
         rank: idx + 1, user: row.user,
         requests: Math.round(row.requests * 100) / 100,
         amount: Math.round(row.amount * 10000) / 10000,
+        hasAmount: !!row.hasAmount,
       }));
     const unknownRow = byUser.get("(unknown)");
     if (unknownRow && !quiet) {
@@ -59,12 +70,13 @@ module.exports = function createUsageRouter({ usageStore, teamCache, userMapping
 
   function aggregateSingleUserUsage(payload) {
     const usageItems = Array.isArray(payload?.usageItems) ? payload.usageItems : [];
-    let requests = 0, amount = 0;
+    let requests = 0, amount = 0, hasAmount = false;
     for (const item of usageItems) {
       requests += toNumber(item.netQuantity) || toNumber(item.grossQuantity) || toNumber(item.quantity) || toNumber(item.requests);
       amount += toNumber(item.netAmount) || toNumber(item.grossAmount) || toNumber(item.amount);
+      hasAmount = hasAmount || item?.netAmount != null || item?.grossAmount != null || item?.amount != null;
     }
-    return { requests: Math.round(requests * 100) / 100, amount: Math.round(amount * 10000) / 10000 };
+    return { requests: Math.round(requests * 100) / 100, amount: Math.round(amount * 10000) / 10000, hasAmount };
   }
 
   function getUserPlanType(login) {
@@ -72,19 +84,48 @@ module.exports = function createUsageRouter({ usageStore, teamCache, userMapping
     return seat ? seat.planType : "business";
   }
 
-  function enrichRanking(ranking, lookup) {
+  function enrichRanking(ranking, lookup, context = {}) {
+    const billingModel = context.billingModel || "legacy_pru";
+    const aiCreditUnitPrice = Number(context.aiCreditUnitPrice) > 0
+      ? Number(context.aiCreditUnitPrice)
+      : AI_CREDIT_PRICE_FALLBACK;
+
     return ranking.map((row) => {
       const planType = getUserPlanType(row.user);
       const cfg = PLAN_CONFIG[planType] || PLAN_CONFIG.business;
       const reqsForPct = row.cycleRequests != null ? row.cycleRequests : row.requests;
+      const quotaBase = billingModel === "ai_credits" ? INCLUDED_QUOTA : cfg.quota;
+      const seatBaseCost = toNumber(cfg.baseCost);
       const mapped = lookup[row.user.toLowerCase()] || null;
+      let amount = calcAmount(reqsForPct, planType);
+      let amountSource = "legacy-formula";
+
+      if (billingModel === "ai_credits") {
+        if (row.hasAmount === true) {
+          amount = Math.round(toNumber(row.amount) * 10000) / 10000;
+          amountSource = "api-amount";
+        } else {
+          amount = Math.round(toNumber(reqsForPct) * aiCreditUnitPrice * 10000) / 10000;
+          amountSource = "fallback-unit-price";
+        }
+      }
+
+      const flooredAmount = Math.max(toNumber(amount), seatBaseCost);
+      amount = Math.round(flooredAmount * 100) / 100;
+      if (flooredAmount !== toNumber(amount) && amountSource === "legacy-formula") {
+        amountSource = "seat-base-floor";
+      } else if (flooredAmount === seatBaseCost && billingModel === "ai_credits") {
+        amountSource = `${amountSource}-seat-floor`;
+      }
+
       const result = {
         user: row.user,
         adName: mapped ? mapped.adName : null,
         team: (teamCache.userTeamMap[row.user] || []).join(", ") || "-",
         requests: row.requests,
-        percentage: cfg.quota > 0 ? Math.round(reqsForPct / cfg.quota * 10000) / 100 : 0,
-        amount: calcAmount(reqsForPct, planType),
+        percentage: quotaBase > 0 ? Math.round(reqsForPct / quotaBase * 10000) / 100 : 0,
+        amount,
+        amountSource,
       };
       if (row.cycleRequests != null) result.cycleRequests = row.cycleRequests;
       return result;
@@ -103,18 +144,18 @@ module.exports = function createUsageRouter({ usageStore, teamCache, userMapping
         try {
           const payload = await githubGetJson(endpoint.path, buildQueryParams({ ...dateOverride, user }));
           const summary = aggregateSingleUserUsage(payload);
-          return { user, requests: summary.requests, amount: summary.amount };
+          return { user, requests: summary.requests, amount: summary.amount, hasAmount: summary.hasAmount };
         } catch (error) {
           failedQueries += 1;
           if (!firstErrorMessage && error instanceof Error) firstErrorMessage = error.message;
-          return { user, requests: 0, amount: 0 };
+          return { user, requests: 0, amount: 0, hasAmount: false };
         }
       }));
       results.push(...chunkResults);
     }
     if (failedQueries === users.length) throw new Error(`Per-user usage query failed for all users. ${firstErrorMessage}`);
     return results.sort((a, b) => b.requests - a.requests).map((row, idx) => ({
-      rank: idx + 1, user: row.user, requests: row.requests, amount: row.amount,
+      rank: idx + 1, user: row.user, requests: row.requests, amount: row.amount, hasAmount: !!row.hasAmount,
     }));
   }
 
@@ -372,9 +413,10 @@ module.exports = function createUsageRouter({ usageStore, teamCache, userMapping
     const byUser = new Map();
     for (const ranking of list) {
       for (const row of ranking) {
-        const cur = byUser.get(row.user) || { user: row.user, requests: 0, amount: 0 };
+        const cur = byUser.get(row.user) || { user: row.user, requests: 0, amount: 0, hasAmount: false };
         cur.requests += row.requests;
         cur.amount += row.amount;
+        cur.hasAmount = cur.hasAmount || row.hasAmount === true;
         byUser.set(row.user, cur);
       }
     }
@@ -384,6 +426,7 @@ module.exports = function createUsageRouter({ usageStore, teamCache, userMapping
         rank: idx + 1, user: row.user,
         requests: Math.round(row.requests * 100) / 100,
         amount: Math.round(row.amount * 10000) / 10000,
+        hasAmount: !!row.hasAmount,
       }));
   }
 
@@ -402,6 +445,8 @@ module.exports = function createUsageRouter({ usageStore, teamCache, userMapping
       rawItemsCount: state.rawItemsCount, mode: state.mode,
       dateLabel: state.dateLabel || "", queryMode: state.queryMode || "default",
       ranking: state.ranking, includedQuota: INCLUDED_QUOTA,
+      billingModel: state.billingModel || "legacy_pru",
+      aiCreditUnitPrice: state.aiCreditUnitPrice || AI_CREDIT_PRICE_FALLBACK,
     });
   });
 
@@ -413,6 +458,7 @@ module.exports = function createUsageRouter({ usageStore, teamCache, userMapping
       const { queryMode, date, startDate, endDate, force } = req.body || {};
       const forceRefresh = force === true || force === "true" || force === 1 || force === "1";
       let ranking, mode, rawItemsCount, source, dateLabel;
+      let billingPeriod = null;
       let cacheHits = 0, totalDaysQueried = 0;
       const { MAX_CONCURRENT_GITHUB } = require("../lib/github-api");
 
@@ -436,6 +482,8 @@ module.exports = function createUsageRouter({ usageStore, teamCache, userMapping
         ranking = mergeRankings(allRankings);
         mode = lastMode; rawItemsCount = totalRaw; source = lastSource;
         dateLabel = `${startDate} ~ ${endDate} (${days.length}天)`;
+        const end = parseDateStr(endDate);
+        if (end) billingPeriod = { year: end.year, month: end.month };
       } else if (queryMode === "single" && date) {
         const d = parseDateStr(date);
         if (!d) throw new Error("无效的日期格式，请使用 YYYY-MM-DD");
@@ -451,6 +499,7 @@ module.exports = function createUsageRouter({ usageStore, teamCache, userMapping
         ranking = dailyResp.result.ranking.map((row) => ({ ...row, cycleRequests: cycleMap.get(row.user) || 0 }));
         mode = dailyResp.result.mode; rawItemsCount = dailyResp.result.rawItemsCount;
         source = dailyResp.result.source; dateLabel = date;
+        billingPeriod = { year: d.year, month: d.month };
       } else {
         const resp = await refreshForDateOverride({}, { force: forceRefresh });
         totalDaysQueried = 1;
@@ -461,22 +510,31 @@ module.exports = function createUsageRouter({ usageStore, teamCache, userMapping
         const labelYear = requiredEnv("BILLING_YEAR") || String(nowLabel.getUTCFullYear());
         const labelMonth = requiredEnv("BILLING_MONTH") || String(nowLabel.getUTCMonth() + 1);
         dateLabel = `${labelYear}-${labelMonth}${requiredEnv("BILLING_DAY") ? "-" + requiredEnv("BILLING_DAY") : ""}`;
+        billingPeriod = { year: Number(labelYear), month: Number(labelMonth) };
       }
 
+      const billingModel = resolveBillingModel(billingPeriod || {});
       const userLookups = ranking.map((r) => r.user);
       const lookup = userMappingService.buildLookup(userLookups);
-      ranking = enrichRanking(ranking, lookup);
+      ranking = enrichRanking(ranking, lookup, {
+        billingModel,
+        aiCreditUnitPrice: AI_CREDIT_PRICE_FALLBACK,
+      });
       const resolvedQueryMode = (queryMode === "range" && startDate && endDate) ? "range"
         : (queryMode === "single" && date) ? "single" : "default";
       Object.assign(state, {
         fetchedAt: new Date().toISOString(), source, rawItemsCount,
         mode, ranking, dateLabel, queryMode: resolvedQueryMode,
+        billingModel,
+        aiCreditUnitPrice: AI_CREDIT_PRICE_FALLBACK,
       });
       res.json({
         ok: true, fetchedAt: state.fetchedAt, source: state.source,
         rawItemsCount: state.rawItemsCount, mode: state.mode,
         dateLabel: state.dateLabel, queryMode: state.queryMode,
         ranking: state.ranking, includedQuota: INCLUDED_QUOTA,
+        billingModel: state.billingModel,
+        aiCreditUnitPrice: state.aiCreditUnitPrice,
         cacheHitRatio: totalDaysQueried > 0 ? Math.round((cacheHits / totalDaysQueried) * 100) : 0,
       });
     } catch (error) {

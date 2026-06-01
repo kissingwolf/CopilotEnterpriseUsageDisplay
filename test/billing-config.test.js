@@ -2,10 +2,13 @@ import { describe, it, expect, beforeEach } from "vitest";
 
 // We need to control the env before requiring the module
 describe("billing-config", () => {
-  let calcAmount, PLAN_CONFIG, INCLUDED_QUOTA, AI_CREDITS_PLAN_CONFIG, resolveBillingModel, getIncludedCreditsPerSeat;
+  let calcAmount, PLAN_CONFIG, INCLUDED_QUOTA, AI_CREDITS_PLAN_CONFIG, resolveBillingModel, getIncludedCreditsPerSeat, AI_CREDIT_PRICE_FALLBACK, BUSINESS_SEAT_BASE_COST, ENTERPRISE_SEAT_BASE_COST;
 
   beforeEach(() => {
     delete process.env.BILLING_MODEL;
+    delete process.env.AI_CREDIT_PRICE_FALLBACK;
+    delete process.env.BUSINESS_SEAT_BASE_COST;
+    delete process.env.ENTERPRISE_SEAT_BASE_COST;
     delete require.cache[require.resolve("../lib/billing-config")];
     // Re-import fresh module for each test
     // Note: INCLUDED_QUOTA reads env at module load time, so we test calcAmount logic
@@ -16,6 +19,9 @@ describe("billing-config", () => {
     AI_CREDITS_PLAN_CONFIG = mod.AI_CREDITS_PLAN_CONFIG;
     resolveBillingModel = mod.resolveBillingModel;
     getIncludedCreditsPerSeat = mod.getIncludedCreditsPerSeat;
+    AI_CREDIT_PRICE_FALLBACK = mod.AI_CREDIT_PRICE_FALLBACK;
+    BUSINESS_SEAT_BASE_COST = mod.BUSINESS_SEAT_BASE_COST;
+    ENTERPRISE_SEAT_BASE_COST = mod.ENTERPRISE_SEAT_BASE_COST;
   });
 
   describe("PLAN_CONFIG", () => {
@@ -27,7 +33,7 @@ describe("billing-config", () => {
     it("business plan has expected structure", () => {
       expect(PLAN_CONFIG.business).toEqual({
         quota: INCLUDED_QUOTA,
-        baseCost: 19,
+        baseCost: BUSINESS_SEAT_BASE_COST,
         overagePrice: 0.04,
       });
     });
@@ -35,7 +41,7 @@ describe("billing-config", () => {
     it("enterprise plan has expected structure", () => {
       expect(PLAN_CONFIG.enterprise).toEqual({
         quota: 1000,
-        baseCost: 39,
+        baseCost: ENTERPRISE_SEAT_BASE_COST,
         overagePrice: 0.04,
       });
     });
@@ -114,6 +120,37 @@ describe("billing-config", () => {
 
     it("falls back to business credits for unknown plans", () => {
       expect(getIncludedCreditsPerSeat("unknown", { year: 2026, month: 9 })).toBe(1900);
+    });
+  });
+
+  describe("AI credit price fallback", () => {
+    it("uses 0.01 by default", () => {
+      expect(AI_CREDIT_PRICE_FALLBACK).toBe(0.01);
+    });
+
+    it("supports env override", () => {
+      process.env.AI_CREDIT_PRICE_FALLBACK = "0.0125";
+      delete require.cache[require.resolve("../lib/billing-config")];
+      const mod = require("../lib/billing-config");
+      expect(mod.AI_CREDIT_PRICE_FALLBACK).toBe(0.0125);
+    });
+  });
+
+  describe("seat base cost overrides", () => {
+    it("uses default seat base costs", () => {
+      expect(BUSINESS_SEAT_BASE_COST).toBe(19);
+      expect(ENTERPRISE_SEAT_BASE_COST).toBe(39);
+    });
+
+    it("supports env overrides", () => {
+      process.env.BUSINESS_SEAT_BASE_COST = "21";
+      process.env.ENTERPRISE_SEAT_BASE_COST = "45";
+      delete require.cache[require.resolve("../lib/billing-config")];
+      const mod = require("../lib/billing-config");
+      expect(mod.BUSINESS_SEAT_BASE_COST).toBe(21);
+      expect(mod.ENTERPRISE_SEAT_BASE_COST).toBe(45);
+      expect(mod.PLAN_CONFIG.business.baseCost).toBe(21);
+      expect(mod.PLAN_CONFIG.enterprise.baseCost).toBe(45);
     });
   });
 });
