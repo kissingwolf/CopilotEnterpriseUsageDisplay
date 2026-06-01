@@ -108,7 +108,8 @@ data/
 | 端点 | 用途 |
 | --- | --- |
 | `GET /enterprises/{enterprise}/copilot/billing/seats` | 用户列表、Team 归属、计划类型、最后活跃时间/编辑器 |
-| `GET /enterprises/{enterprise}/settings/billing/premium_request/usage` | Legacy Premium Request 用量（支持 `?user=`、`?year=`、`?month=`、`?day=`），用于历史/过渡期与活动排行 |
+| `GET /enterprises/{enterprise}/settings/billing/premium_request/usage` | Legacy Premium Request 用量（支持 `?user=`、`?year=`、`?month=`、`?day=`），用于 `legacy_pru` 账期 |
+| `GET /enterprises/{enterprise}/settings/billing/ai_credit/usage` | AI Credits 用量（支持 `?user=`、`?year=`、`?month=`、`?day=`），用于 `ai_credits` 账期 |
 | `GET /enterprises/{enterprise}/settings/billing/usage` | Enhanced billing 明细报表，legacy 模式用于整体账单回源，AI Credits 模式用于模型维度用量排行 |
 | `GET /enterprises/{enterprise}/settings/billing/usage/summary` | Enhanced billing 汇总报表，AI Credits 模式下按 `product=Copilot` 聚合 Copilot `netAmount` |
 | `GET /enterprises/{enterprise}/settings/billing/cost-centers` | Cost Center 列表与详情 |
@@ -116,6 +117,8 @@ data/
 | `DELETE /enterprises/{enterprise}/settings/billing/cost-centers/{cost_center_id}/resource` | 从 Cost Center 移除资源（users/orgs/repos） |
 | `GET /enterprises/{enterprise}/teams` | Enterprise Teams 列表及描述 |
 | `GET /enterprises/{enterprise}/teams/{team_id}/memberships` | Team 成员列表 |
+
+说明：`/api/usage` 路由会按 `BILLING_MODEL + 查询账期` 自动选择 usage endpoint family。`auto` 模式在 2026-06 及之后优先使用 `ai_credit/usage`，更早账期使用 `premium_request/usage`；两类数据在本地缓存中按 source tag 分区，避免口径混用。
 
 ## 新增 API 端点（本项目内部）
 
@@ -326,7 +329,7 @@ curl -X POST http://localhost:3000/api/usage/refresh \
 1. 必填环境变量校验
 2. DNS 与网络连通性
 3. Token 有效性
-4. Seats 与 Premium Usage / Enhanced Billing 必要权限
+4. Seats 与 model-aware usage / Enhanced Billing 必要权限
 5. Cost Centers / Budgets 能力探测（可选功能）
 
 输出级别：`PASS` / `WARN` / `FAIL`
