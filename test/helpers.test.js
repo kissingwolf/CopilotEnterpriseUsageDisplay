@@ -148,6 +148,42 @@ describe("billing endpoints", () => {
 
     expect(endpoint.path).toBe("/enterprises/StarbucksChina/settings/billing/usage");
   });
+
+  it("builds ai_credit usage endpoint when billing model is ai_credits", () => {
+    process.env.ENTERPRISE_SLUG = "Acme Enterprise";
+    loadHelpers();
+    const endpoint = helpers.buildCopilotUsageEndpoint({ billingModel: "ai_credits" });
+
+    expect(endpoint).toMatchObject({
+      billingModel: "ai_credits",
+      family: "ai_credit",
+      path: "/enterprises/Acme%20Enterprise/settings/billing/ai_credit/usage",
+    });
+  });
+
+  it("builds premium_request usage endpoint when billing model is legacy_pru", () => {
+    process.env.ENTERPRISE_SLUG = "Acme Enterprise";
+    loadHelpers();
+    const endpoint = helpers.buildCopilotUsageEndpoint({ billingModel: "legacy_pru" });
+
+    expect(endpoint).toMatchObject({
+      billingModel: "legacy_pru",
+      family: "premium_request",
+      path: "/enterprises/Acme%20Enterprise/settings/billing/premium_request/usage",
+    });
+  });
+
+  it("resolves auto mode by billing period", () => {
+    process.env.ENTERPRISE_SLUG = "Acme Enterprise";
+    loadHelpers();
+    const endpoint = helpers.buildCopilotUsageEndpoint({ period: { year: 2026, month: 6 } });
+
+    expect(endpoint).toMatchObject({
+      billingModel: "ai_credits",
+      family: "ai_credit",
+      path: "/enterprises/Acme%20Enterprise/settings/billing/ai_credit/usage",
+    });
+  });
 });
 
 describe("Copilot billing usage items", () => {

@@ -13,7 +13,7 @@ const {
   resolveBillingModel,
 } = require("../lib/billing-config");
 const { githubGetJson } = require("../lib/github-api");
-const { toNumber, pickUser, writeError, buildQueryParams, buildEndpoint } = require("../lib/helpers");
+const { toNumber, pickUser, writeError, buildQueryParams, buildCopilotUsageEndpoint } = require("../lib/helpers");
 const { enumerateDays } = require("../lib/date-utils");
 
 const CACHE_TTL_MS = (Number(requiredEnv("CACHE_TTL")) || 300) * 1000;
@@ -174,7 +174,7 @@ module.exports = function createUsageRouter({ usageStore, teamCache, userMapping
    *      A placeholder row with empty ranking means that day's aggregation
    *      failed and cycle totals would under-count.
    */
-  function buildCycleFromSQLite(year, month) {
+  function buildCycleFromSQLite(year, month, expectedSourceTag) {
     const RECENT_TTL_MS = 60 * 60 * 1000;
     const RECENT_WINDOW_DAYS = 3;
 
@@ -266,6 +266,13 @@ module.exports = function createUsageRouter({ usageStore, teamCache, userMapping
      * aggregation silently lost users). */
     const byUser = new Map();
     for (const row of rows) {
+      if (expectedSourceTag && row.source !== expectedSourceTag) {
+        logger.info(
+          { date: row.date, expectedSource: expectedSourceTag, actualSource: row.source },
+          "SQLite cycle: source tag mismatch, falling back"
+        );
+        return null;
+      }
       const ranking = row.ranking ? JSON.parse(row.ranking) : null;
       if (!ranking || ranking.length === 0) {
         const rawCount = typeof row.raw_count === "number" ? row.raw_count : 0;
@@ -298,7 +305,11 @@ module.exports = function createUsageRouter({ usageStore, teamCache, userMapping
 
   async function refreshForDateOverride(dateOverride, opts) {
     const force = !!(opts && opts.force);
-    const cacheKey = JSON.stringify(dateOverride || {});
+    const now = new Date();
+    const year = dateOverride?.year || Number(requiredEnv("BILLING_YEAR")) || now.getUTCFullYear();
+    const month = dateOverride?.month || Number(requiredEnv("BILLING_MONTH")) || (now.getUTCMonth() + 1);
+    const billingModel = resolveBillingModel({ year, month });
+    const cacheKey = `${billingModel}:${JSON.stringify(dateOverride || {})}`;
     if (!force) {
       const cached = refreshCache.get(cacheKey);
       if (cached) {
@@ -343,6 +354,9 @@ module.exports = function createUsageRouter({ usageStore, teamCache, userMapping
     const year = dateOverride?.year || Number(requiredEnv("BILLING_YEAR")) || now.getUTCFullYear();
     const month = dateOverride?.month || Number(requiredEnv("BILLING_MONTH")) || (now.getUTCMonth() + 1);
     const day = dateOverride?.day;
+    const billingModel = resolveBillingModel({ year, month });
+    const endpoint = buildCopilotUsageEndpoint({ billingModel, period: { year, month } });
+    const sourceTag = `${endpoint.scope}|${endpoint.family}`;
     const dateKey = day
       ? `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`
       : `${year}-${String(month).padStart(2, "0")}`;
@@ -352,40 +366,57 @@ module.exports = function createUsageRouter({ usageStore, teamCache, userMapping
       const cachedDay = usageStore.getDay(dateKey);
       const effectiveTTL = getEffectiveTTL(year, month, day);
       if (cachedDay && Date.now() - new Date(cachedDay.fetched_at).getTime() < effectiveTTL) {
-        logger.debug({ dateKey, source: "sqlite" }, "SQLite cache hit");
-        let ranking = cachedDay.ranking || aggregateRanking(cachedDay.data);
-        let mode = cachedDay.mode;
-        const usageItems = Array.isArray(cachedDay.data?.usageItems) ? cachedDay.data.usageItems : [];
-        if (ranking.length === 0 && usageItems.length > 0 && Object.keys(teamCache.userTeamMap).length > 0) {
-          logger.info({ dateKey, items: usageItems.length }, "SQLite cached ranking empty, triggering per-user fallback");
-          try {
-            ranking = await buildRankingByUserQueries(buildEndpoint(), dateOverride);
-            mode = "per-user-fallback";
-            if (ranking.length > 0) {
-              usageStore.saveDay(dateKey, cachedDay.year, cachedDay.month, cachedDay.day, cachedDay.data, mode, cachedDay.raw_count, cachedDay.source, cachedDay.fetched_at, ranking);
+        if (cachedDay.source !== sourceTag) {
+          logger.info(
+            { dateKey, expectedSource: sourceTag, actualSource: cachedDay.source },
+            "SQLite cache source mismatch, refreshing from GitHub"
+          );
+        } else {
+          logger.debug({ dateKey, source: "sqlite" }, "SQLite cache hit");
+          let ranking = cachedDay.ranking || aggregateRanking(cachedDay.data);
+          let mode = cachedDay.mode;
+          const usageItems = Array.isArray(cachedDay.data?.usageItems) ? cachedDay.data.usageItems : [];
+          if (ranking.length === 0 && usageItems.length > 0 && Object.keys(teamCache.userTeamMap).length > 0) {
+            logger.info({ dateKey, items: usageItems.length }, "SQLite cached ranking empty, triggering per-user fallback");
+            try {
+              ranking = await buildRankingByUserQueries(endpoint, dateOverride);
+              mode = "per-user-fallback";
+              if (ranking.length > 0) {
+                usageStore.saveDay(
+                  dateKey,
+                  cachedDay.year,
+                  cachedDay.month,
+                  cachedDay.day,
+                  cachedDay.data,
+                  mode,
+                  cachedDay.raw_count,
+                  sourceTag,
+                  cachedDay.fetched_at,
+                  ranking
+                );
+              }
+            } catch (e) {
+              logger.error({ dateKey, err: e.message }, "Per-user fallback failed");
             }
-          } catch (e) {
-            logger.error({ dateKey, err: e.message }, "Per-user fallback failed");
           }
+          const result = { ranking, mode, rawItemsCount: cachedDay.raw_count, source: sourceTag };
+          refreshCache.set(cacheKey, { result });
+          return { result, cacheHit: "sqlite" };
         }
-        const result = { ranking, mode, rawItemsCount: cachedDay.raw_count, source: cachedDay.source };
-        refreshCache.set(cacheKey, { result });
-        return { result, cacheHit: "sqlite" };
       }
     }
 
     /* Cycle query (no day): try SQLite first */
     if (!day && !force) {
-      const sqliteRanking = buildCycleFromSQLite(year, month);
+      const sqliteRanking = buildCycleFromSQLite(year, month, sourceTag);
       if (sqliteRanking) {
-        const result = { ranking: sqliteRanking, mode: "sqlite-cycle", rawItemsCount: 0, source: buildEndpoint().scope };
+        const result = { ranking: sqliteRanking, mode: "sqlite-cycle", rawItemsCount: 0, source: sourceTag };
         refreshCache.set(cacheKey, { result });
         return { result, cacheHit: "sqlite" };
       }
     }
 
     /* Fetch from GitHub */
-    const endpoint = buildEndpoint();
     const extra = dateOverride || {};
     logger.debug({ dateKey, endpoint: endpoint.path }, "Fetching from GitHub API");
     const data = await githubGetJson(endpoint.path, buildQueryParams(extra));
@@ -400,10 +431,21 @@ module.exports = function createUsageRouter({ usageStore, teamCache, userMapping
     const result = {
       ranking, mode,
       rawItemsCount: Array.isArray(data?.usageItems) ? data.usageItems.length : 0,
-      source: endpoint.scope,
+      source: sourceTag,
     };
     if (day) {
-      usageStore.saveDay(dateKey, year, month, day, data, mode, result.rawItemsCount, endpoint.scope, new Date().toISOString(), ranking.length > 0 ? ranking : null);
+      usageStore.saveDay(
+        dateKey,
+        year,
+        month,
+        day,
+        data,
+        mode,
+        result.rawItemsCount,
+        sourceTag,
+        new Date().toISOString(),
+        ranking.length > 0 ? ranking : null
+      );
     }
     refreshCache.set(cacheKey, { result });
     return { result, cacheHit: "github" };

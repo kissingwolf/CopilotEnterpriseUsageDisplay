@@ -34,6 +34,12 @@ function isIntString(value) {
   return /^\d+$/.test(String(value));
 }
 
+function resolveBillingModel(configured, year, month) {
+  const mode = String(configured || "auto").toLowerCase();
+  if (mode === "legacy_pru" || mode === "ai_credits") return mode;
+  return year > 2026 || (year === 2026 && month >= 6) ? "ai_credits" : "legacy_pru";
+}
+
 function loadEnv() {
   const envPath = path.join(process.cwd(), ".env");
   if (fs.existsSync(envPath)) {
@@ -140,14 +146,23 @@ async function requestStatus(url, token, timeoutMs = 20000) {
   const now = new Date();
   const year = now.getUTCFullYear();
   const month = now.getUTCMonth() + 1;
-  status = await requestStatus(
-    `${apiBase}/enterprises/${enterprise}/settings/billing/premium_request/usage?year=${year}&month=${month}`,
-    token
-  );
+  const billingModel = resolveBillingModel(process.env.BILLING_MODEL, year, month);
+  const primaryFamily = billingModel === "ai_credits" ? "ai_credit" : "premium_request";
+  const fallbackFamily = primaryFamily === "ai_credit" ? "premium_request" : "ai_credit";
+  const primaryUrl = `${apiBase}/enterprises/${enterprise}/settings/billing/${primaryFamily}/usage?year=${year}&month=${month}`;
+  const fallbackUrl = `${apiBase}/enterprises/${enterprise}/settings/billing/${fallbackFamily}/usage?year=${year}&month=${month}`;
+
+  status = await requestStatus(primaryUrl, token);
   if (status === 200) {
-    log("PASS", "API: premium usage endpoint accessible");
+    log("PASS", `API: ${primaryFamily} usage endpoint accessible (${billingModel})`);
   } else {
-    log("FAIL", `API: premium usage endpoint status=${status} (${statusLabel(status)})`);
+    const fallbackStatus = await requestStatus(fallbackUrl, token);
+    if (fallbackStatus === 200) {
+      log("WARN", `API: ${primaryFamily} usage unavailable(status=${status}), but ${fallbackFamily} is accessible; check BILLING_MODEL/permissions`);
+    } else {
+      log("FAIL", `API: ${primaryFamily} usage endpoint status=${status} (${statusLabel(status)})`);
+      log("WARN", `API: fallback ${fallbackFamily} usage status=${fallbackStatus} (${statusLabel(fallbackStatus)})`);
+    }
   }
 
   // 6) Cost centers (optional)
