@@ -2,13 +2,37 @@
  * Billing routes – GET /api/seats, /api/billing/summary, /api/billing/models
  */
 const express = require("express");
-const { requiredEnv, PLAN_CONFIG, resolveBillingModel, getIncludedCreditsPerSeat } = require("../lib/billing-config");
+const {
+  requiredEnv,
+  PLAN_CONFIG,
+  resolveBillingModel,
+  getIncludedCreditsPerSeat,
+  AI_CREDIT_PRICE_FALLBACK,
+} = require("../lib/billing-config");
 const { githubGetJson, invalidateCacheByPrefix } = require("../lib/github-api");
 const { toNumber, writeError, buildEndpoint, buildBillingUsageEndpoint, aggregateCopilotBillingItems } = require("../lib/helpers");
 const { ensureSeatsData, fetchCopilotSeats } = require("./seats");
 
 module.exports = function createBillingRouter({ usageStore, teamCache, userMappingService }) {
   const router = express.Router();
+
+  function resolveAiCreditUnitPrice(rawItems) {
+    const prices = (Array.isArray(rawItems) ? rawItems : [])
+      .map((item) => toNumber(item?.pricePerUnit))
+      .filter((p) => p > 0);
+
+    if (prices.length === 0) {
+      return { unitPrice: AI_CREDIT_PRICE_FALLBACK, source: "fallback-env" };
+    }
+
+    const normalized = prices.map((p) => Math.round(p * 1000000) / 1000000);
+    const unique = Array.from(new Set(normalized));
+    if (unique.length === 1) {
+      return { unitPrice: unique[0], source: "api-pricePerUnit" };
+    }
+
+    return { unitPrice: unique[0], source: "api-pricePerUnit-multi" };
+  }
 
   // Non-destructive adName enrichment: never mutates teamCache.seatsRaw.
   const enrichSeatsWithAdName = (seats, lookup) => {
@@ -88,6 +112,7 @@ module.exports = function createBillingRouter({ usageStore, teamCache, userMappi
 
         const copilotBilling = aggregateCopilotBillingItems(rawItems);
         const copilotNetAmount = copilotBilling.amount;
+        const unitPrice = resolveAiCreditUnitPrice(rawItems);
         const totalEstimatedCost = Math.round((totalSeatsCost + copilotNetAmount) * 10000) / 10000;
 
         res.json({
@@ -105,7 +130,11 @@ module.exports = function createBillingRouter({ usageStore, teamCache, userMappi
           copilotNetAmount,
           copilotBillingItemCount: copilotBilling.itemCount,
           amountSources: copilotBilling.amountSources,
-          copilotEstimatedCredits: Math.round(copilotNetAmount * 100 * 100) / 100,
+          aiCreditUnitPrice: unitPrice.unitPrice,
+          aiCreditUnitPriceSource: unitPrice.source,
+          copilotEstimatedCredits: unitPrice.unitPrice > 0
+            ? Math.round((copilotNetAmount / unitPrice.unitPrice) * 100) / 100
+            : 0,
           totalEstimatedCost,
         });
         return;

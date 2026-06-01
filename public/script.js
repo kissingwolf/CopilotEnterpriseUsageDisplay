@@ -34,6 +34,8 @@
   var sortKey = "requests";
   var sortAsc = false;
   var includedQuota = 300;
+  var billingModel = "legacy_pru";
+  var aiCreditUnitPrice = 0.01;
   var selectedTeams = null;
   var latestMetaText = "尚未刷新数据";
   var PAGE_SIZE = 15;
@@ -120,14 +122,14 @@
         "<td>" + row.requests + "</td>" +
         "<td>" + buildCycleBar(row.cycleRequests, includedQuota) + "</td>" +
         "<td>" + row.percentage.toFixed(2) + "%</td>" +
-        "<td>" + row.amount.toFixed(4) + "</td></tr>";
+        "<td>" + row.amount.toFixed(2) + "</td></tr>";
     }
     return "<tr>" +
       "<td>" + C.escapeHtml(displayName) + "</td>" +
       "<td>" + C.escapeHtml(row.team || "-") + "</td>" +
       "<td>" + buildCycleBar(row.requests, includedQuota) + "</td>" +
       "<td>" + row.percentage.toFixed(2) + "%</td>" +
-      "<td>" + row.amount.toFixed(4) + "</td></tr>";
+      "<td>" + row.amount.toFixed(2) + "</td></tr>";
   }
 
   function renderRows(sortedRows, isSingle) {
@@ -193,8 +195,13 @@
     if (!currentData) return;
     var rows = Array.isArray(currentData.ranking) ? currentData.ranking : [];
     var isSingle = currentData.queryMode === "single";
+    var isAiCredits = currentData.billingModel === "ai_credits";
     var colCount = isSingle ? 6 : 5;
     if (currentData.includedQuota) includedQuota = currentData.includedQuota;
+    billingModel = currentData.billingModel || "legacy_pru";
+    if (typeof currentData.aiCreditUnitPrice === "number" && currentData.aiCreditUnitPrice > 0) {
+      aiCreditUnitPrice = currentData.aiCreditUnitPrice;
+    }
     rebuildTeamFilter(rows);
     if (selectedTeams) {
       rows = rows.filter(function (r) {
@@ -209,19 +216,24 @@
 
     var theadTr = document.querySelector("table thead tr");
     if (isSingle) {
+      var singleDailyLabel = isAiCredits ? "当日积分" : "当日请求量";
+      var singleCycleLabel = isAiCredits ? "本周期积分" : "本周期请求量";
+      var singlePctLabel = isAiCredits ? "AI credits(%)" : "Premium requests(%)";
       theadTr.innerHTML =
         '<th data-sort="user">\u7528\u6237 <span class="sort-arrow"></span></th>' +
         '<th data-sort="team">Team <span class="sort-arrow"></span></th>' +
-        '<th data-sort="requests">\u5f53\u65e5\u8bf7\u6c42\u91cf <span class="sort-arrow"></span></th>' +
-        '<th data-sort="cycleRequests">\u672c\u5468\u671f\u8bf7\u6c42\u91cf <span class="sort-arrow"></span></th>' +
-        '<th data-sort="percentage">Premium requests(%) <span class="sort-arrow"></span></th>' +
+        '<th data-sort="requests">' + singleDailyLabel + ' <span class="sort-arrow"></span></th>' +
+        '<th data-sort="cycleRequests">' + singleCycleLabel + ' <span class="sort-arrow"></span></th>' +
+        '<th data-sort="percentage">' + singlePctLabel + ' <span class="sort-arrow"></span></th>' +
         '<th data-sort="amount">\u91d1\u989d(USD) <span class="sort-arrow"></span></th>';
     } else {
+      var rangeCycleLabel = isAiCredits ? "本周期积分" : "本周期请求量";
+      var rangePctLabel = isAiCredits ? "AI credits(%)" : "Premium requests(%)";
       theadTr.innerHTML =
         '<th data-sort="user">\u7528\u6237 <span class="sort-arrow"></span></th>' +
         '<th data-sort="team">Team <span class="sort-arrow"></span></th>' +
-        '<th data-sort="requests">\u672c\u5468\u671f\u8bf7\u6c42\u91cf <span class="sort-arrow"></span></th>' +
-        '<th data-sort="percentage">Premium requests(%) <span class="sort-arrow"></span></th>' +
+        '<th data-sort="requests">' + rangeCycleLabel + ' <span class="sort-arrow"></span></th>' +
+        '<th data-sort="percentage">' + rangePctLabel + ' <span class="sort-arrow"></span></th>' +
         '<th data-sort="amount">\u91d1\u989d(USD) <span class="sort-arrow"></span></th>';
     }
     if (!rows.length) {
@@ -282,8 +294,9 @@
     var ratio = quota > 0 ? value / quota : 0;
     var pct = Math.min(ratio * 100, 100);
     var level = ratio >= 1 ? "level-danger" : ratio >= 0.75 ? "level-warn" : "level-normal";
+    var unitLabel = billingModel === "ai_credits" ? "积分" : "请求";
     var overTag = ratio > 1 ? ' <span class="cycle-bar-over">(超额)</span>' : '';
-    return '<div class="cycle-bar"><span class="cycle-bar-label">' + value + '/' + quota + overTag + '</span>' +
+    return '<div class="cycle-bar"><span class="cycle-bar-label">' + value + '/' + quota + ' ' + unitLabel + overTag + '</span>' +
       '<div class="cycle-bar-track"><div class="cycle-bar-fill ' + level + '" style="width:' + pct.toFixed(1) + '%"></div></div></div>';
   }
 
@@ -519,11 +532,17 @@
 
     if (isAiCredits) {
       var creditsPct = data.includedCreditsPool > 0 ? (data.copilotEstimatedCredits / data.includedCreditsPool * 100).toFixed(1) : "0";
+        var creditUnitPrice = typeof data.aiCreditUnitPrice === "number" && data.aiCreditUnitPrice > 0 ? data.aiCreditUnitPrice : aiCreditUnitPrice;
+        var creditUnitPriceSource = data.aiCreditUnitPriceSource === "api-pricePerUnit" ? "API 单价"
+          : data.aiCreditUnitPriceSource === "api-pricePerUnit-multi" ? "API 多模型单价(取首个)"
+            : "env fallback";
       html += "<h3>AI Credits \u4F7F\u7528\u60C5\u51B5\uFF08" + C.escapeHtml(monthLabel) + "\uFF09</h3><table><thead><tr><th>\u9879\u76EE</th><th>\u503C</th></tr></thead><tbody>";
       html += "<tr><td>\u8BA1\u8D39\u6A21\u5F0F</td><td>AI Credits / usage-based billing</td></tr>";
       html += "<tr><td>\u6C60\u5316\u5305\u542B\u989D\u5EA6</td><td>" + data.includedCreditsPool + " AI Credits (" + data.totalSeats + " \u5E2D\u4F4D)</td></tr>";
+        html += "<tr><td>\u79EF\u5206\u5355\u4EF7</td><td>$" + Number(creditUnitPrice).toFixed(4) + "/\u79EF\u5206" +
+          " <span style='color:var(--muted);font-size:0.8em'>(" + C.escapeHtml(creditUnitPriceSource) + ")</span></td></tr>";
       html += "<tr><td>Copilot \u6D88\u8D39\u91D1\u989D</td><td>$" + data.copilotNetAmount.toFixed(4) + "</td></tr>";
-      html += "<tr><td>\u6298\u7B97 AI Credits</td><td>" + data.copilotEstimatedCredits.toFixed(2) + " credits</td></tr>";
+        html += "<tr><td>\u6298\u7B97 AI Credits</td><td>" + data.copilotEstimatedCredits.toFixed(2) + " \u79EF\u5206</td></tr>";
       html += "<tr><td>\u989D\u5EA6\u4F7F\u7528\u7387\uFF08\u6309\u91D1\u989D\u6298\u7B97\uFF09</td><td>" + creditsPct + "%</td></tr>";
       html += "<tr><td>\u91D1\u989D\u6765\u6E90</td><td>" + C.escapeHtml((data.amountSources || []).join(", ") || "-") + "</td></tr>";
       html += "</tbody></table>";
