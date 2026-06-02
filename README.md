@@ -41,6 +41,7 @@
 - **Team 视角图** — 数据分析页新增"Team视角"Tab，右上角下拉框可单选 Team：全选时展示各 Team 人均请求量横向柱状排名；选择某 Team 后展示该 Team 请求量最多的 Top20 成员排名，成员名称遵循映射规则（已映射显示 AD 名，未映射显示 GitHub 登录名），图表高度随条目数自动扩展
 - **用户活跃性分析** — 数据分析页新增"用户活跃性"Tab，饼图按不活跃天数将全量席位用户分为 4 类：1~5日不活跃、6~10日不活跃、10日以上不活跃、注册后未活跃；支持 Team 单选过滤；点击饼图扇形在下方展开用户列表（显示名 / Team / 最后活跃），用户名遵循 AD 映射规则
 - **本周期套餐用量分析** — 数据分析页新增"本周期套餐用量"Tab，按当前自然月统计全量席位用户的 Premium Requests 配额使用率；支持 Team 单选过滤，饼图按 <5%、5%-50%、50%-100%、100%-200%、>=200% 分布展示，点击扇形可展开用户明细（用户名 / Team / Premium Requests 使用率）
+- **后台管理与访问控制** — 新增 `/admin` 后台管理页（登录态自适应：未登录显示登录表单，登录后展示 4 个入口按钮：用户映射管理 `/user`、Team 月度账单 `/billpage`、Cost Center 管理 `/costcenter`、返回用量看板 `/`）；`/`、`/admin` 公开访问，`/user`、`/billpage`、`/costcenter` 及对应 `.html` 必须管理员登录，未登录访问自动 302 重定向到 `/admin?next=...`，登录成功后跳回原页面
 - **Team 月度账单** — 独立页面 `/billpage`，按月查看 Team 维度账单，显示席位费、套餐外附加费、总费用，支持展开查看用户明细，历史数据持久化到 SQLite（仅通过直接访问 URL `/billpage` 进入，主页不展示入口）
 - **双计费模型兼容** — `legacy_pru` 保留 Premium Request 历史/过渡期逻辑；`ai_credits` 面向 2026-06-01 后 usage-based billing；`auto` 按账期自动选择模型
 - **按月强制刷新兑底** — `/billpage` 页面提供“强制刷新”按钮：二次确认后会清空选中月份的 SQLite 缓存、逐日回源 GitHub API并重新计算账单，作为缓存错误、空数据或 API 数据延迟场景下的兑底手段
@@ -65,6 +66,7 @@ routes/
   analytics.js          数据分析路由（趋势、Top 用户、汇总）
   user-mapping.js       用户映射管理路由（上传、重载、成员列表）
   seats.js              Copilot 席位数据加载器（共享模块）
+  auth.js               管理员登录/登出/session 路由（POST /admin/login, /admin/logout, GET /admin/session）
 lib/
   github-api.js         GitHub API 服务层（LRU 缓存、ETag、并发队列、重试退避、single-flight）
   usage-store.js        SQLite 持久缓存层（预编译语句、席位快照清理、月度账单存储）
@@ -74,6 +76,7 @@ lib/
   date-utils.js         日期工具函数
   helpers.js            共享辅助函数
   logger.js             pino 结构化日志（dev 模式 pretty，生产 JSON）
+  auth.js               管理员鉴权纯函数与中间件（verifyCredentials / requireAdminPage / requireAdminApi）
 public/
   common.js             前端公共模块（IIFE，CopilotDashboard 命名空间）
   index.html / script.js      主页面（用量排行、排序、模态框、分页）
@@ -81,14 +84,18 @@ public/
   analytics.html / analytics.js    数据分析页（含数据新鲜度提示）
   billpage.html / billpage.js      Team 月度账单页
   user.html / user.js              用户映射管理页
+  admin.html / admin.js            管理员登录页 / 控制台（登录态双视图切换）
   styles.css            全局样式
 test/
   date-utils.test.js    日期工具单元测试
   billing-config.test.js  计费配置单元测试
   helpers.test.js       辅助函数单元测试
+  auth.test.js          管理员凭据校验单元测试（verifyCredentials）
+  auth-routes.test.js   管理员登录/登出/session/守卫页面集成测试
 scripts/
   preflight-check.sh    启动前自检（Shell）
   preflight-check.js    启动前自检（Node）
+  hash-admin-password.js  生成 bcrypt 哈希用于 ADMIN_PASSWORD_HASH（cost=12，支持隐藏交互输入）
 docs/
   refactoring-architecture.md  重构架构设计文档
   sqlite-cache-design.md       SQLite 缓存架构设计文档
@@ -141,6 +148,10 @@ data/
 | `GET` | `/api/bill?year=2026&month=4` | Team 月度账单（席位费 + 超额费 + 总费用，按 Team 分组） |
 | `GET` | `/api/bill/export?year=2026&month=4` | 导出 Team 月度账单为 Excel 文件（多 Sheet：每 Team 明细 + Total 汇总） |
 | `GET` | `/api/user/members/export` | 导出全量成员映射表为 Excel 文件（7 列：Github用户名、Team、AD用户名、AD邮箱、计划、最后活跃、映射状态） |
+| `GET` | `/admin` | 后台管理页面（公开访问，未登录显示登录表单，登录后展示 4 个入口按钮） |
+| `POST` | `/admin/login` | 管理员登录，请求体 `{user, password}`；bcrypt 校验后 `req.session.regenerate()` 防 session-fixation，成功返回 `{ok:true,user}`，失败返回 401 |
+| `POST` | `/admin/logout` | 销毁当前 session 并清除 `connect.sid` cookie |
+| `GET` | `/admin/session` | 返回当前会话状态 `{authenticated, user}`，供前端页面判断是否已登录 |
 
 > 详细的“强制刷新”与“自动刷新调度器”使用说明见后文《强制刷新与自动刷新》小节。
 
@@ -245,6 +256,9 @@ node ./scripts/preflight-check.js --strict
 | USER_LIST | 否（兼容保留） | 空 | USER_LIST=alice,bob,charlie | 兼容占位变量，当前代码不主动读取 |
 | ORG_LIST | 否（兼容保留） | 空 | ORG_LIST=org-a,org-b | 兼容占位变量，当前代码不主动读取 |
 | MAX_USERS | 否（兼容保留） | 空 | MAX_USERS=300 | 兼容占位变量，当前代码不主动读取 |
+| ADMIN_USER | 条件必填（启用后台需要） | 空 | ADMIN_USER=admin | 管理员登录用户名；未设置时 `/admin/login` 总返回 401，受护页面无法进入 |
+| ADMIN_PASSWORD_HASH | 条件必填（启用后台需要） | 空 | ADMIN_PASSWORD_HASH=\$2b\$12\$... | bcrypt 哈希（建议 cost ≥ 10），使用 `node scripts/hash-admin-password.js` 生成；空值拒绝登录（不允许空配置绕过） |
+| SESSION_SECRET | 生产必填 | 空 | SESSION_SECRET=$(node -e "console.log(require('crypto').randomBytes(48).toString('hex'))") | express-session 签名密钥；**生产环境未设置则拒绝启动**；开发环境未设置时会生成临时密钥，重启后会话会丢失 |
 
 ## 缓存架构
 
@@ -324,6 +338,59 @@ curl -X POST http://localhost:3000/api/usage/refresh \
 
 - 路径：`http://<host>:<port>/billpage`
 - 能力：按月查询 Team 账单、按 Team 多选筛选、点击展开查看用户明细、强制刷新选中月份。
+
+## 后台管理与访问控制
+
+### 1) 设计目标
+
+- 主页 `/` 与登录页 `/admin` 保持公开，任何访客都能看。
+- “管理类”页面（用户映射、Team 月度账单、Cost Center 管理）仅限管理员访问。
+- 未登录访问受护页面时 302 重定向到 `/admin?next=<原始路径>`，登录成功后自动跳回。
+
+### 2) 受护路径清单
+
+| 路径 | 是否需要登录 | 备注 |
+| --- | :---: | --- |
+| `/`、`/index.html` | 否 | 主页、用量看板 |
+| `/admin`、`/admin.html` | 否 | 后台登录页本身 |
+| `POST /admin/login`、`POST /admin/logout`、`GET /admin/session` | 否 | 鉴权接口（未登录需能调用） |
+| `/user`、`/user.html` | 是 | 用户映射管理 |
+| `/billpage`、`/billpage.html` | 是 | Team 月度账单 |
+| `/costcenter`、`/costcenter.html`、`/costcenter/:name` | 是 | Cost Center 管理 |
+| `/api/*` | 否（当前仅护页面） | 需仅护页面方案；后续如需依照可复用 `requireAdminApi` 中间件 |
+
+> 守卫中间件挂载在 `express.static` 之前，以避免通过直接请求 `/user.html` 等静态资源绕过鉴权。
+
+### 3) 首次启用步骤
+
+```bash
+# 1. 生成 bcrypt 密码哈希（交互输入隐藏，推荐）
+node scripts/hash-admin-password.js
+# 或传入参数（谨慎：明文密码会出现在 shell 历史记录中）
+node scripts/hash-admin-password.js 'your-strong-password'
+
+# 2. 生成会话密钥
+node -e "console.log(require('crypto').randomBytes(48).toString('hex'))"
+
+# 3. 把以下三个变量填入 .env【勿入库】
+ADMIN_USER=admin
+ADMIN_PASSWORD_HASH=$2b$12$...
+SESSION_SECRET=上述输出的 hex
+
+# 4. 重启服务
+npm start
+# 打开 http://localhost:3000/admin 输入账密即可进入控制台
+```
+
+### 4) 关键安全措施
+
+- **密码存储**：仅以 bcrypt 哈希形式存于环境变量，本项目从不读取也不记录明文密码。
+- **空配置防绕过**：`ADMIN_USER` 或 `ADMIN_PASSWORD_HASH` 为空时，`verifyCredentials` 直接返回 `false`，避免未设置账密时被空密码绕过。
+- **Session 固定攻击防护**：登录成功后调用 `req.session.regenerate()` 生成新 session ID。
+- **Cookie 加固**：`httpOnly`（抵御 XSS 读取）、`sameSite=lax`（抵御 CSRF）、生产环境 `secure=true`（仅 HTTPS 下传输）。
+- **会话过期**：8 小时滑动过期（`rolling: true`），闲置超时自动退出。
+- **静态资源不被绕过**：鉴权中间件挂载顺序在 `express.static` 之前，同时护住 `/user`、`/user.html` 等两种路径形式。
+- **生产严控**：`NODE_ENV=production` 且未设 `SESSION_SECRET` 时服务拒绝启动，避免默认弱密钥上生产。
 
 ## 自检脚本说明
 
@@ -528,13 +595,27 @@ sudo systemctl reload nginx
 
 ### 脱敏与审计要求
 
-- `.env` 不应提交到 Git；`.env.example` 只能包含空值或示例值，禁止写入真实 PAT、Authorization header、企业内部用户邮箱、Cost Center 私密名称清单等敏感信息。
+- `.env` 不应提交到 Git；`.env.example` 只能包含空值或示例值，禁止写入真实 PAT、Authorization header、企业内部用户邮箱、Cost Center 私密名称清单、管理员密码明文/哈希、`SESSION_SECRET` 实例值等敏感信息。
 - 日志与审计输出应遵循最小必要原则：保留 `billingModel`、账期、GitHub API endpoint 类型、HTTP 状态码、聚合金额、`amountSource` / `amountSources`、`cost_center_id` 等排障字段；避免记录 token、完整请求头、原始用户邮箱列表、原始 API 响应全文。
+- 管理员鉴权相关日志只记录事件类型与 `user` 标识（如 `admin_login_success` / `admin_login_failed`），**严禁记录用户提交的密码、`ADMIN_PASSWORD_HASH` 完整值、`SESSION_SECRET`、`connect.sid` cookie 原文、完整请求体**；Express access log 默认不带请求体，接入外部 SIEM 时需确保 `/admin/login` 请求体不被上传。
+- 鉴权失败响应使用统一文案（`Invalid credentials`），不区分“用户名不存在”与“密码错误”，避免账号枚举。
 - AI Credits 金额审计以 GitHub enhanced billing API 的 `netAmount` 为准；本地展示的 `copilotEstimatedCredits` 只是按 `$0.01/credit` 折算的可读指标。
-- 使用 `LOG_LEVEL=trace` 做本地调试时，应避免把输出直接粘贴到 issue、PR、日志系统或聊天工具；分享前需确认 token、用户身份、邮箱、内部 Team / Cost Center 命名已脱敏。
-- 提交前建议执行 `git diff` 并搜索 `ghp_`、`github_pat_`、`Authorization`、`Bearer` 等敏感模式，确认没有凭据进入版本库。
+- 使用 `LOG_LEVEL=trace` 做本地调试时，应避免把输出直接粘贴到 issue、PR、日志系统或聊天工具；分享前需确认 token、用户身份、邮箱、内部 Team / Cost Center 命名、管理员凭据已脱敏。
+- 提交前建议执行 `git diff` 并搜索 `ghp_`、`github_pat_`、`Authorization`、`Bearer`、`ADMIN_PASSWORD_HASH=\$2`、`SESSION_SECRET=` 等敏感模式，确认没有凭据进入版本库。
+- 部署交接时，`.env` 文件权限建议设为 `chmod 600` 并归属服务账号，避免同服务器上其他用户读取 `ADMIN_PASSWORD_HASH` 与 `SESSION_SECRET`。
 
 ## 更新日志
+
+### v3.5 — 后台管理与访问控制
+
+- **新增 `/admin` 后台管理页** — `public/admin.html` + `public/admin.js` 实现登录态双视图：未登录显示登录表单（user / password），登录后展示 4 个入口按钮（用户映射、Team 月度账单、Cost Center 管理、返回用量看板），页面加载时调用 `GET /admin/session` 自动判断状态。
+- **鉴权中间件与路由分离** — `lib/auth.js` 导出 `verifyCredentials`（纯函数）、`requireAdminPage`（页面未登录返回 302 重定向 `/admin?next=...`）、`requireAdminApi`（API 未登录返回 401 JSON）三个能力；`routes/auth.js` 提供 `POST /admin/login`、`POST /admin/logout`、`GET /admin/session`。
+- **守卫页面路径** — `server.js` 在 `express.static` 之前挂载守卫，护住两种表形式共 6 个路径：`/user`、`/user.html`、`/billpage`、`/billpage.html`、`/costcenter`、`/costcenter.html`（及 `/costcenter/:name`）；**顺序修复了“直接请求 `.html` 静态文件绕过鉴权”的隐患**。
+- **防御强化** — 登录成功后 `req.session.regenerate()` 防 session-fixation；bcrypt 验证使用 `compareSync`；`ADMIN_USER` 或 `ADMIN_PASSWORD_HASH` 为空时直接拒绝登录（抗空配置绕过）；cookie 默认 `httpOnly + sameSite=lax`，`NODE_ENV=production` 走 `secure=true`；滑动过期 8 小时。
+- **启动保护** — 生产环境未设 `SESSION_SECRET` 时服务拒绝启动；开发环境生成临时密钥并 warn 警告，避免默认密钥上生产。
+- **新增脚本** — `scripts/hash-admin-password.js` 生成 bcrypt 哈希（cost=12），支持位置参数传入与隐藏交互输入；最小密码长度 8 位。
+- **测试覆盖** — `test/auth.test.js`（3 个）覆盖凭据校验与空配置防绕过；`test/auth-routes.test.js`（8 个）使用真实 `express-session` 覆盖登录/登出/session/3 个受护页未登录 302/登录后 200/主页与 `/admin` 不拦截；全量测试 108/108 通过。
+- **脱敏要求** — README 脱敏与审计小节新增对 `ADMIN_PASSWORD_HASH`、`SESSION_SECRET`、管理员鉴权日志、`/admin/login` 请求体的处理要求；鉴权失败使用统一文案避免账号枚举。
 
 ### v3.4 — 模型使用排行双源回退
 

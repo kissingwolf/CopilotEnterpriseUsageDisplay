@@ -1,16 +1,67 @@
 require("dotenv").config();
 
+const crypto = require("crypto");
 const express = require("express");
+const session = require("express-session");
 const path = require("path");
 const logger = require("./lib/logger");
 const { UsageStore } = require("./lib/usage-store");
 const UserMappingService = require("./lib/user-mapping");
 const { initEtagCache } = require("./lib/github-api");
+const { requireAdminPage } = require("./lib/auth");
+const createAuthRouter = require("./routes/auth");
 
 const app = express();
 const PORT = Number(process.env.PORT || 3000);
 
 app.use(express.json());
+app.use(express.urlencoded({ extended: false }));
+
+/* ── Session middleware (must be mounted before static + auth-protected routes) ── */
+let sessionSecret = process.env.SESSION_SECRET;
+if (!sessionSecret) {
+  if (process.env.NODE_ENV === "production") {
+    logger.fatal("SESSION_SECRET is required in production. Refusing to start.");
+    process.exit(1);
+  }
+  sessionSecret = crypto.randomBytes(32).toString("hex");
+  logger.warn("SESSION_SECRET not set, generated an ephemeral secret (dev only). Sessions will NOT survive restart.");
+}
+app.use(session({
+  name: "connect.sid",
+  secret: sessionSecret,
+  resave: false,
+  saveUninitialized: false,
+  rolling: true,
+  cookie: {
+    httpOnly: true,
+    sameSite: "lax",
+    secure: process.env.NODE_ENV === "production",
+    maxAge: 1000 * 60 * 60 * 8, /* 8 hours */
+  },
+}));
+
+/* ── Admin auth routes (login / logout / session) — MUST be before static ── */
+app.use(createAuthRouter());
+
+/* ── Admin login/console page — explicit route so /admin works without .html ── */
+app.get("/admin", (_req, res) => {
+  res.sendFile(path.join(__dirname, "public", "admin.html"));
+});
+
+/* ── Admin page guards: protect /user /billpage /costcenter (and their .html variants)
+      Must be mounted BEFORE express.static so that direct .html access is also guarded. ── */
+const adminGuardedPages = [
+  "/user",
+  "/user.html",
+  "/billpage",
+  "/billpage.html",
+  "/costcenter",
+  "/costcenter.html",
+  "/costcenter/:name",
+];
+app.get(adminGuardedPages, requireAdminPage, (_req, res, next) => next());
+
 app.use(express.static(path.join(__dirname, "public")));
 
 /* ── HTTP Access Logging Middleware ── */
