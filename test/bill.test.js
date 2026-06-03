@@ -29,3 +29,35 @@ describe("bill team aggregation", () => {
     expect(teams[0].users[0].overageCost).toBe(8.8);
   });
 });
+
+describe("computeUserOverage", () => {
+  const { computeUserOverage } = createBillRouter.__testables;
+
+  it("prices overage at AI_CREDIT_PRICE_FALLBACK in ai_credits mode (business)", () => {
+    // INCLUDED_QUOTA default 300; AI_CREDIT_PRICE_FALLBACK default 0.01.
+    const result = computeUserOverage(520, "business", "ai_credits");
+    expect(result.overageRequests).toBe(220);
+    expect(result.overageCost).toBe(2.2);
+    expect(result.unitPrice).toBe(0.01);
+  });
+
+  it("prices overage at AI_CREDIT_PRICE_FALLBACK in ai_credits mode (enterprise)", () => {
+    const result = computeUserOverage(1200, "enterprise", "ai_credits");
+    expect(result.overageRequests).toBe(200);
+    expect(result.overageCost).toBe(2);
+    expect(result.unitPrice).toBe(0.01);
+  });
+
+  it("keeps legacy $0.04 pricing in legacy_pru mode", () => {
+    const result = computeUserOverage(520, "business", "legacy_pru");
+    expect(result.overageRequests).toBe(220);
+    expect(result.overageCost).toBe(8.8);
+    expect(result.unitPrice).toBe(0.04);
+  });
+
+  it("returns zero overage when under quota", () => {
+    const result = computeUserOverage(100, "business", "ai_credits");
+    expect(result.overageRequests).toBe(0);
+    expect(result.overageCost).toBe(0);
+  });
+});

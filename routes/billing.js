@@ -2,6 +2,7 @@
  * Billing routes – GET /api/seats, /api/billing/summary, /api/billing/models
  */
 const express = require("express");
+const logger = require("../lib/logger");
 const {
   requiredEnv,
   PLAN_CONFIG,
@@ -10,7 +11,7 @@ const {
   AI_CREDIT_PRICE_FALLBACK,
 } = require("../lib/billing-config");
 const { githubGetJson, invalidateCacheByPrefix } = require("../lib/github-api");
-const { toNumber, isLegacyProductSkus, writeError, buildEndpoint, buildBillingUsageEndpoint, aggregateCopilotBillingItems } = require("../lib/helpers");
+const { toNumber, isLegacyProductSkus, writeError, buildEndpoint, buildCopilotUsageEndpoint, buildBillingUsageEndpoint, aggregateCopilotBillingItems } = require("../lib/helpers");
 const { ensureSeatsData, fetchCopilotSeats } = require("./seats");
 
 module.exports = function createBillingRouter({ usageStore, teamCache, userMappingService }) {
@@ -213,8 +214,14 @@ module.exports = function createBillingRouter({ usageStore, teamCache, userMappi
       if (month) params.set("month", String(month));
       params.set("product", "Copilot");
 
-      // Call the preferred API based on billing model
-      let endpoint = billingModel === "ai_credits" ? buildBillingUsageEndpoint("report") : buildEndpoint();
+      // Call the preferred API based on billing model.
+      // ai_credits → /ai_credit/usage (real model names like "Auto: Claude Haiku 4.5")
+      // legacy_pru → /premium_request/usage (legacy PRU rows)
+      // NOTE: /settings/billing/usage only returns seat-level rollups ("Copilot Business")
+      // and is unsuitable for model-level breakdowns.
+      let endpoint = billingModel === "ai_credits"
+        ? buildCopilotUsageEndpoint({ billingModel: "ai_credits" })
+        : buildEndpoint();
       let data = await githubGetJson(endpoint.path, params);
       let items = Array.isArray(data?.usageItems) ? data.usageItems : [];
 
@@ -228,8 +235,11 @@ module.exports = function createBillingRouter({ usageStore, teamCache, userMappi
       if (items.length > 0) {
         const keys = items.map(keyOf);
         if (isLegacyProductSkus(keys)) {
+          const initialBillingModel = billingModel;
           // Try the alternative endpoint
-          const altEndpoint = billingModel === "ai_credits" ? buildEndpoint() : buildBillingUsageEndpoint("report");
+          const altEndpoint = billingModel === "ai_credits"
+            ? buildEndpoint()
+            : buildCopilotUsageEndpoint({ billingModel: "ai_credits" });
           const altData = await githubGetJson(altEndpoint.path, params).catch(() => null);
           const altItems = Array.isArray(altData?.usageItems) ? altData.usageItems : [];
           if (altItems.length > 0) {
@@ -238,8 +248,34 @@ module.exports = function createBillingRouter({ usageStore, teamCache, userMappi
               // Alternative has real model names — use it
               billingModel = billingModel === "ai_credits" ? "legacy_pru" : "ai_credits";
               items = altItems;
+              logger.info({
+                event: "billing_models_fallback",
+                fallbackSuccess: true,
+                initialBillingModel,
+                finalBillingModel: billingModel,
+                primaryItemCount: keys.length,
+                fallbackItemCount: altKeys.length,
+              }, "billing models fallback applied");
+            } else {
+              logger.info({
+                event: "billing_models_fallback",
+                fallbackSuccess: false,
+                initialBillingModel,
+                finalBillingModel: initialBillingModel,
+                primaryItemCount: keys.length,
+                fallbackItemCount: altKeys.length,
+              }, "billing models fallback kept primary result");
             }
             // If both APIs return product-level keys, keep the primary result
+          } else {
+            logger.info({
+              event: "billing_models_fallback",
+              fallbackSuccess: false,
+              initialBillingModel,
+              finalBillingModel: initialBillingModel,
+              primaryItemCount: keys.length,
+              fallbackItemCount: 0,
+            }, "billing models fallback returned no alternative items");
           }
         }
       }

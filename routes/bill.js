@@ -4,11 +4,22 @@
  */
 const express = require("express");
 const logger = require("../lib/logger");
-const { PLAN_CONFIG, calcAmount } = require("../lib/billing-config");
+const { PLAN_CONFIG, calcAmount, resolveBillingModel, resolveOverageUnitPrice } = require("../lib/billing-config");
 const { githubGetJson, MAX_CONCURRENT_GITHUB } = require("../lib/github-api");
 const { toNumber, pickUser, writeError, buildQueryParams, buildEndpoint, isCopilotBillingItem, normalizeBillingAmount } = require("../lib/helpers");
 const { enumerateDays } = require("../lib/date-utils");
 const { ensureSeatsData } = require("./seats");
+
+// Compute per-user overage in a billing-model-aware way.
+// In ai_credits mode the unit price is AI_CREDIT_PRICE_FALLBACK (USD per credit);
+// in legacy_pru mode it stays as PLAN_CONFIG[plan].overagePrice ($0.04 per request).
+function computeUserOverage(requests, planType, billingModel) {
+  const cfg = PLAN_CONFIG[planType] || PLAN_CONFIG.business;
+  const overageRequests = Math.round(Math.max(0, requests - cfg.quota) * 100) / 100;
+  const unitPrice = resolveOverageUnitPrice(billingModel, planType);
+  const overageCost = Math.round(overageRequests * unitPrice * 10000) / 10000;
+  return { overageRequests, overageCost, quota: cfg.quota, unitPrice };
+}
 
 function groupByTeam(billRows, directSpentMap = null) {
   const teamMap = new Map();
@@ -262,6 +273,7 @@ function createBillRouter({ usageStore, teamCache, userMappingService, usageRout
     const seatLogins = seats.map((s) => s.login);
     const lookup = userMappingService.buildLookup(seatLogins);
     const billRows = [];
+    const billingModel = resolveBillingModel({ year, month });
 
     for (const seat of seats) {
       const login = seat.login;
@@ -270,8 +282,7 @@ function createBillRouter({ usageStore, teamCache, userMappingService, usageRout
       const cfg = PLAN_CONFIG[planType] || PLAN_CONFIG.business;
       const requests = Math.round((usageMap.get(login) || 0) * 100) / 100;
       const seatCost = cfg.baseCost;
-      const overageRequests = Math.round(Math.max(0, requests - cfg.quota) * 100) / 100;
-      const overageCost = Math.round(overageRequests * cfg.overagePrice * 10000) / 10000;
+      const { overageRequests, overageCost } = computeUserOverage(requests, planType, billingModel);
       const totalCost = Math.round((seatCost + overageCost) * 10000) / 10000;
 
       const mapped = lookup[login.toLowerCase()] || null;
@@ -607,6 +618,6 @@ function createBillRouter({ usageStore, teamCache, userMappingService, usageRout
   return { router, getMonthlyBillTeams };
 }
 
-createBillRouter.__testables = { groupByTeam };
+createBillRouter.__testables = { groupByTeam, computeUserOverage };
 
 module.exports = createBillRouter;

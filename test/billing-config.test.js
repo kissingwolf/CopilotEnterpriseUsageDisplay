@@ -106,6 +106,37 @@ describe("billing-config", () => {
     });
   });
 
+  describe("resolveOverageUnitPrice", () => {
+    it("returns AI_CREDIT_PRICE_FALLBACK in ai_credits mode (business)", () => {
+      const { resolveOverageUnitPrice } = require("../lib/billing-config");
+      expect(resolveOverageUnitPrice("ai_credits", "business")).toBe(AI_CREDIT_PRICE_FALLBACK);
+    });
+
+    it("returns AI_CREDIT_PRICE_FALLBACK in ai_credits mode (enterprise)", () => {
+      const { resolveOverageUnitPrice } = require("../lib/billing-config");
+      expect(resolveOverageUnitPrice("ai_credits", "enterprise")).toBe(AI_CREDIT_PRICE_FALLBACK);
+    });
+
+    it("returns legacy 0.04 in legacy_pru mode", () => {
+      const { resolveOverageUnitPrice } = require("../lib/billing-config");
+      expect(resolveOverageUnitPrice("legacy_pru", "business")).toBe(0.04);
+      expect(resolveOverageUnitPrice("legacy_pru", "enterprise")).toBe(0.04);
+    });
+
+    it("defaults to legacy plan price for unknown/empty billing model", () => {
+      const { resolveOverageUnitPrice } = require("../lib/billing-config");
+      expect(resolveOverageUnitPrice("", "business")).toBe(0.04);
+      expect(resolveOverageUnitPrice(undefined, "enterprise")).toBe(0.04);
+    });
+
+    it("honors AI_CREDIT_PRICE_FALLBACK env override", () => {
+      process.env.AI_CREDIT_PRICE_FALLBACK = "0.02";
+      delete require.cache[require.resolve("../lib/billing-config")];
+      const mod = require("../lib/billing-config");
+      expect(mod.resolveOverageUnitPrice("ai_credits", "business")).toBe(0.02);
+    });
+  });
+
   describe("AI Credits plan config", () => {
     it("defines standard included credits and base cost", () => {
       expect(AI_CREDITS_PLAN_CONFIG.business).toMatchObject({ includedCredits: 1900, baseCost: 19 });

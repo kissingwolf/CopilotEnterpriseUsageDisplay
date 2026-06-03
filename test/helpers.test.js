@@ -255,6 +255,7 @@ describe("isLegacyProductSkus", () => {
   it("returns true for product-level Copilot SKUs", () => {
     expect(helpers.isLegacyProductSkus(["Copilot Premium Request", "Copilot Business"])).toBe(true);
     expect(helpers.isLegacyProductSkus(["Copilot Enterprise"])).toBe(true);
+    expect(helpers.isLegacyProductSkus(["GitHub AI Credits", "Unknown"])).toBe(true);
   });
 
   it("returns false for actual AI model names", () => {
@@ -270,5 +271,13 @@ describe("isLegacyProductSkus", () => {
 
   it("returns false when mixed with legacy and model names", () => {
     expect(helpers.isLegacyProductSkus(["Copilot Business", "Claude Sonnet 4.6"])).toBe(false);
+  });
+
+  it("returns true when all non-empty keys are product-level and unknown placeholders", () => {
+    expect(helpers.isLegacyProductSkus(["Unknown", "Copilot Premium Request", "  "])).toBe(true);
+  });
+
+  it("returns false when model-like keys are present even with product-level keys", () => {
+    expect(helpers.isLegacyProductSkus(["Copilot Premium Request", "Auto: GPT-5.3-Codex"])).toBe(false);
   });
 });

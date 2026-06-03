@@ -117,7 +117,7 @@ data/
 | `GET /enterprises/{enterprise}/copilot/billing/seats` | 用户列表、Team 归属、计划类型、最后活跃时间/编辑器 |
 | `GET /enterprises/{enterprise}/settings/billing/premium_request/usage` | Legacy Premium Request 用量（支持 `?user=`、`?year=`、`?month=`、`?day=`），用于 `legacy_pru` 账期 |
 | `GET /enterprises/{enterprise}/settings/billing/ai_credit/usage` | AI Credits 用量（支持 `?user=`、`?year=`、`?month=`、`?day=`），用于 `ai_credits` 账期 |
-| `GET /enterprises/{enterprise}/settings/billing/usage` | Enhanced billing 明细报表，legacy 模式用于整体账单回源，AI Credits 模式用于模型维度用量排行 |
+| `GET /enterprises/{enterprise}/settings/billing/usage` | Enhanced billing 明细报表（席位/汇总相关口径，不作为模型排行主数据源） |
 | `GET /enterprises/{enterprise}/settings/billing/usage/summary` | Enhanced billing 汇总报表，AI Credits 模式下按 `product=Copilot` 聚合 Copilot `netAmount` |
 | `GET /enterprises/{enterprise}/settings/billing/cost-centers` | Cost Center 列表与详情 |
 | `POST /enterprises/{enterprise}/settings/billing/cost-centers/{cost_center_id}/resource` | 向 Cost Center 添加资源（users/orgs/repos） |
@@ -135,7 +135,7 @@ data/
 | `POST` | `/api/usage/refresh` | 刷新用量数据，支持按日期/日期范围/默认三种查询模式；请求体可传 `force:true` 跳过内存与 SQLite 缓存强制回源 |
 | `POST` | `/api/bill/refresh` | **按月强制刷新**：请求体 `{year, month}`，清空该月所有 `daily_usage` 与 `monthly_bill` 缓存后逐日回源 GitHub，重新计算账单 |
 | `GET` | `/api/seats` | 获取 Copilot 席位数据（支持 `?refresh=1` 强制刷新） |
-| `GET` | `/api/billing/models?year=2026&month=6` | 模型使用排行；legacy PRU 模式读取 Premium Request 用量，AI Credits 模式读取 Enhanced billing 明细报表 |
+| `GET` | `/api/billing/models?year=2026&month=6` | 模型使用排行；legacy PRU 模式读取 `premium_request/usage`，AI Credits 模式读取 `ai_credit/usage`，并在返回产品级 SKU 时自动双向回退到另一端点 |
 | `GET` | `/api/teams` | 获取 Enterprise Teams 列表（含成员数） |
 | `GET` | `/api/cost-centers` | 获取 Cost Center 列表 |
 | `GET` | `/api/cost-centers/:name` | 获取单个 Cost Center 详情（含资源分组） |
@@ -605,6 +605,14 @@ sudo systemctl reload nginx
 - 部署交接时，`.env` 文件权限建议设为 `chmod 600` 并归属服务账号，避免同服务器上其他用户读取 `ADMIN_PASSWORD_HASH` 与 `SESSION_SECRET`。
 
 ## 更新日志
+
+### v3.6 — 模型数据源修正与 billpage AI Credits 单价对齐
+
+- **修复模型排行数据源选型错误** — `/api/billing/models` 在 `ai_credits` 模式下改为优先读取 `settings/billing/ai_credit/usage`（含 `model` 字段，如 `Auto: Claude Haiku 4.5`），不再把仅返回席位聚合的 `settings/billing/usage` 当作模型主数据源。
+- **保留并强化双向回退** — 当首选端点仅返回产品级 SKU（如 `Copilot Business` / `Copilot Premium Request`）时，自动尝试另一个端点；若备选返回真实模型名则切换结果，否则保留首选结果。
+- **修复 Team 月度账单超额单价** — `/billpage` 的用户级套餐外附加费在 `ai_credits` 模式改为使用 `AI_CREDIT_PRICE_FALLBACK`（默认 `0.01`）作为单位价格；`legacy_pru` 仍保持 `$0.04`。
+- **影响范围最小化** — 仅调整模型排行取数端点与 billpage 用户级 overage 单价；团队级 `directSpentMap` 覆盖逻辑、前端结构、SQLite schema 均保持不变。
+- **脱敏与审计补充** — 排障日志继续遵循最小必要字段，建议重点保留 `billingModel`、账期、端点类型、聚合金额与 fallback 结果，不输出 token、完整请求头及原始响应全文。
 
 ### v3.5 — 后台管理与访问控制
 

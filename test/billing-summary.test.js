@@ -195,7 +195,7 @@ describe("GET /api/billing/models", () => {
     });
 
     expect(mocks.githubGetJson).toHaveBeenCalledWith(
-      "/enterprises/acme/settings/billing/usage",
+      "/enterprises/acme/settings/billing/ai_credit/usage",
       expect.any(URLSearchParams)
     );
     const params = mocks.githubGetJson.mock.calls[0][1];
@@ -238,7 +238,7 @@ describe("GET /api/billing/models", () => {
     });
 
     expect(mocks.githubGetJson).toHaveBeenCalledWith(
-      "/enterprises/acme/settings/billing/usage",
+      "/enterprises/acme/settings/billing/ai_credit/usage",
       expect.any(URLSearchParams)
     );
 
