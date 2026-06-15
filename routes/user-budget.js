@@ -9,6 +9,7 @@
  *   DELETE /api/user-budgets/:id     — delete
  */
 const express = require("express");
+const path = require("path");
 const logger = require("../lib/logger");
 const { requiredEnv } = require("../lib/billing-config");
 const {
@@ -117,6 +118,10 @@ function validateUpdatePayload(body) {
 
 module.exports = function createUserBudgetRouter({ userMappingService } = {}) {
   const router = express.Router();
+
+  router.get("/userbudget", (_req, res) =>
+    res.sendFile(path.join(__dirname, "..", "public", "userbudget.html"))
+  );
 
   router.get("/api/user-budgets", async (req, res) => {
     try {
