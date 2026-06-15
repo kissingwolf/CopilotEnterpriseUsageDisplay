@@ -59,6 +59,8 @@ const adminGuardedPages = [
   "/costcenter",
   "/costcenter.html",
   "/costcenter/:name",
+  "/userbudget",
+  "/userbudget.html",
 ];
 app.get(adminGuardedPages, requireAdminPage, (_req, res, next) => next());
 
@@ -110,6 +112,12 @@ function mapUrlToAction(url, method) {
     "GET /api/cost-centers": "list_cost_centers",
     "GET /api/cost-centers/": "get_cost_center_detail",
     "POST /api/cost-centers/": "add_users_to_cost_center",
+    "GET /api/user-budgets": "list_user_budgets",
+    "GET /api/user-budgets/": "get_user_budget_detail",
+    "POST /api/user-budgets": "create_user_budget",
+    "PATCH /api/user-budgets/": "update_user_budget",
+    "DELETE /api/user-budgets/": "delete_user_budget",
+    "GET /userbudget": "view_user_budget_page",
     "GET /api/analytics/trends": "get_analytics_trends",
     "GET /api/analytics/top-users": "get_top_users",
     "GET /api/analytics/daily-summary": "get_daily_summary",
@@ -145,6 +153,7 @@ app.use(require("./routes/billing")(deps));
 app.use(require("./routes/teams")(deps));
 const billModule = require("./routes/bill")({ ...deps, usageRouter });
 app.use(require("./routes/costcenter")({ ...deps, getMonthlyBillTeams: billModule.getMonthlyBillTeams }));
+app.use(require("./routes/user-budget")(deps));
 app.use(require("./routes/analytics")(deps));
 app.use(require("./routes/user-mapping")(deps));
 app.use(billModule.router);

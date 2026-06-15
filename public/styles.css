@@ -1298,3 +1298,37 @@ tbody tr:hover {
   border-top: 2px solid var(--accent-deep);
   background: var(--bg-soft);
 }
+
+/* User Budget form */
+.ub-form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.ub-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.ub-row label:first-child {
+  width: 160px;
+  flex-shrink: 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+.ub-row input[type="text"],
+.ub-row input[type="number"],
+.ub-row input[type="search"],
+.ub-row select {
+  flex: 1;
+  padding: 6px 10px;
+  border: 1px solid var(--border, #ddd);
+  border-radius: 6px;
+  background: var(--card, #fff);
+  color: var(--text);
+  font-size: 14px;
+}
+.ub-row input:disabled {
+  background: var(--bg-soft, #f5f5f5);
+  color: var(--muted);
+}

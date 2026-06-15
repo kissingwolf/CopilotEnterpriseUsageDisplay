@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>User Budget 管理</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main class="page">
+      <section class="card">
+        <header class="topbar topbar-row">
+          <h1>User Budget 管理</h1>
+          <a class="back-link" href="/">返回用量看板</a>
+        </header>
+
+        <div class="query-bar">
+          <div class="query-bar-left">
+            <label for="skuSel" class="auto-label">SKU 筛选</label>
+            <select id="skuSel" class="auto-select">
+              <option value="">全部</option>
+              <option value="ai_credits">ai_credits</option>
+              <option value="premium_requests">premium_requests</option>
+            </select>
+            <label for="searchInput" class="auto-label" style="margin-left:12px;">搜索</label>
+            <input type="search" id="searchInput" class="auto-select" placeholder="GitHub 登录 / AD 名" style="width:220px;" />
+            <button id="refreshBtn" class="refresh-btn">刷新</button>
+            <button id="newBudgetBtn" class="info-btn" type="button" style="margin-left:12px;">+ 新建 User Budget</button>
+          </div>
+        </div>
+
+        <p id="meta" class="meta">尚未刷新数据</p>
+        <div id="error" class="error" hidden></div>
+
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>GitHub 登录</th>
+                <th>AD 名称</th>
+                <th>SKU</th>
+                <th class="cc-money-col">预算</th>
+                <th>防超支</th>
+                <th>警告</th>
+                <th style="width:140px;">操作</th>
+              </tr>
+            </thead>
+            <tbody id="tbody">
+              <tr>
+                <td colspan="7" class="empty">暂无数据，请点击"刷新"。</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+    </main>
+
+    <!-- Modal -->
+    <div id="modal" class="modal-overlay">
+      <div class="modal-card">
+        <div class="modal-header">
+          <h2 id="modalTitle"></h2>
+          <button id="modalClose" class="modal-close">&times;</button>
+        </div>
+        <div id="modalBody" class="modal-body"></div>
+      </div>
+    </div>
+
+    <!-- Seats datalist injected by JS -->
+    <datalist id="seatsDatalist"></datalist>
+
+    <script src="/common.js"></script>
+    <script src="/userbudget.js"></script>
+  </body>
+</html>

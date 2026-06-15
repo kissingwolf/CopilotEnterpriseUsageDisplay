@@ -606,6 +606,18 @@ sudo systemctl reload nginx
 
 ## 更新日志
 
+### v3.7 — User Budget 独立管理页
+
+- **新增 `/userbudget` 页面** — `public/userbudget.html` + `public/userbudget.js` 提供 user 级预算的独立管理入口，与"预算和费用"弹窗（仅展示 cost_center 级预算）解耦，避免两类作用域混淆。
+- **新增后端路由 `routes/user-budget.js`** — 暴露 5 个 REST 端点：`GET /api/user-budgets`（列表，注入 AD 名）、`GET /api/user-budgets/:id`（详情，含 `consumed_amount`）、`POST /api/user-budgets`（新建）、`PATCH /api/user-budgets/:id`（更新金额/警告）、`DELETE /api/user-budgets/:id`（删除）。
+- **GitHub Budgets API 对接** — 调用 `/enterprises/{slug}/settings/billing/budgets`（GET/POST/PATCH/DELETE）；`lib/github-api.js` 新增 `githubPatchJson(pathname, body)` 工具函数，写入后自动失效 `settings/billing/budgets` 前缀缓存。
+- **作用域硬约束兜底** — 后端强制 `budget_scope: "user"` + `budget_entity_name: ""` + `prevent_further_usage: true`；`budget_product_sku` 仅允许 `ai_credits` / `premium_requests`；前端 UI 锁死防超支复选框为不可关闭，符合 GitHub 对 user/multi_user_customer scope 的强制要求。
+- **AD 名称统一映射** — 列表响应通过 `userMappingService.buildLookup` 注入 `adName`，与席位 / Team 成员 / Cost Center 用户资源保持一致的展示规范（`adName → fallback login`，tooltip 还原原始 login）。
+- **页面访问保护** — `/userbudget` 与 `/userbudget.html` 已加入 `adminGuardedPages`，与 `/user` `/billpage` `/costcenter` 同级别管理员鉴权；`mapUrlToAction` 增加 5 个 action 映射用于结构化访问日志。
+- **新建/编辑表单** — 弹窗复用既有 `.modal-overlay` + `.modal-card` 视觉语言；GitHub 登录输入支持 `<datalist>` 联想（数据来自 `/api/seats`），输入时自动回填只读 AD 名称；编辑模式额外渲染当月已用进度条（来自 `effective_budget.consumed_amount`，沿用 `.budget-bar` 三级阈值 0.75 / 1.0）。
+- **入口集成** — `public/index.html` 在 `info-bar` 增加 `<a href="/userbudget">User Budget 管理</a>`；原"预算和费用"弹窗逻辑保持原样不动，仅作为 cost_center 视图。
+- **脱敏要求** — 服务端日志仅记录 `id` / `sku` / `amount` / `willAlert` 等元数据，**不输出**完整 token、`alert_recipients` 邮箱列表、原始 GitHub 响应体；README 中所有示例均使用占位符（USERNAME / alice / bob）。
+
 ### v3.6 — 模型数据源修正与 billpage AI Credits 单价对齐
 
 - **修复模型排行数据源选型错误** — `/api/billing/models` 在 `ai_credits` 模式下改为优先读取 `settings/billing/ai_credit/usage`（含 `model` 字段，如 `Auto: Claude Haiku 4.5`），不再把仅返回席位聚合的 `settings/billing/usage` 当作模型主数据源。
