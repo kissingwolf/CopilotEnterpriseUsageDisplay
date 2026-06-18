@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Copilot Insights</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main class="page insights-page">
+      <section class="card insights-card-shell">
+        <header class="topbar topbar-row insights-topbar">
+          <div>
+            <h1>Copilot Insights</h1>
+            <p class="insights-subtitle">Enterprise usage and code generation analytics</p>
+          </div>
+          <a class="back-link" href="/">返回用量看板</a>
+        </header>
+
+        <div class="query-bar insights-query-bar">
+          <div class="query-bar-left">
+            <div class="query-tabs" id="rangeTabs">
+              <button class="tab" data-range="7">Last 7 days</button>
+              <button class="tab active" data-range="28">Last 28 days</button>
+              <button class="tab" data-range="90">Last 90 days</button>
+            </div>
+            <button id="refreshBtn" class="refresh-btn">刷新</button>
+          </div>
+        </div>
+
+        <p id="meta" class="meta">尚未加载数据</p>
+        <div id="error" class="error" hidden></div>
+
+        <div class="analytics-tabs insights-tabs">
+          <button class="analytics-tab active" data-pane="usagePane">Copilot IDE Usage</button>
+          <button class="analytics-tab" data-pane="codePane">Code Generation</button>
+        </div>
+
+        <div id="usagePane" class="analytics-pane active insights-pane">
+          <div id="usageMetrics" class="insights-metrics"></div>
+          <div class="insights-grid insights-grid-two">
+            <article class="insights-chart-card"><div class="insights-chart-heading"><h2>IDE daily active users</h2><span>Unique users who used Copilot on a given day, either via chat or code completions</span></div><canvas id="dailyActiveChart"></canvas></article>
+            <article class="insights-chart-card"><div class="insights-chart-heading"><h2>IDE weekly active users</h2><span>Unique users who used Copilot on a given week, either via chat or code completions</span></div><canvas id="weeklyActiveChart"></canvas></article>
+          </div>
+          <div class="insights-grid">
+            <article class="insights-chart-card insights-wide"><div class="insights-chart-heading"><h2>Average chat requests per active user</h2><span>User-initiated requests across all chat modes, excluding code completions</span></div><canvas id="avgChatChart"></canvas></article>
+            <article class="insights-chart-card insights-wide"><div class="insights-chart-heading"><h2>Requests per chat mode</h2><span>User-initiated chat requests across all modes</span></div><canvas id="chatModeChart"></canvas></article>
+            <article class="insights-chart-card"><div class="insights-chart-heading"><h2>Code completions</h2><span>Inline code suggestions shown and accepted</span></div><canvas id="codeCompletionsChart"></canvas></article>
+            <article class="insights-chart-card"><div class="insights-chart-heading"><h2>Code completions acceptance rate</h2><span>Percentage of shown inline completions that were either fully or partially accepted</span></div><canvas id="acceptanceChart"></canvas></article>
+            <article class="insights-chart-card"><div class="insights-chart-heading"><h2>Chat model usage</h2><span>Distribution of models across all chat modes</span></div><canvas id="modelUsageChart"></canvas></article>
+            <article class="insights-chart-card"><div class="insights-chart-heading"><h2>Language usage</h2><span>Distribution of languages used across all chat modes and code completions</span></div><canvas id="languageUsageChart"></canvas></article>
+            <article class="insights-chart-card"><div class="insights-chart-heading"><h2>Model usage per chat mode</h2><span>Most requested model per mode</span></div><canvas id="modelModeChart"></canvas></article>
+          </div>
+        </div>
+
+        <div id="codePane" class="analytics-pane insights-pane">
+          <div id="codeMetrics" class="insights-metrics"></div>
+          <div class="insights-grid">
+            <article class="insights-chart-card insights-wide"><div class="insights-chart-heading"><h2>Daily total of lines added and deleted</h2><span>Total lines of code added to and deleted from the codebase across all modes</span></div><canvas id="dailyLinesChart"></canvas></article>
+            <article class="insights-chart-card"><div class="insights-chart-heading"><h2>User-initiated code changes</h2><span>Compares the total lines of code suggested and manually added by users through code completions and chat panel actions</span></div><canvas id="userModeChart"></canvas></article>
+            <article class="insights-chart-card"><div class="insights-chart-heading"><h2>Agent-initiated code changes</h2><span>Compares the total lines of code automatically added to and deleted from the codebase by agents on behalf of users</span></div><canvas id="agentChart"></canvas></article>
+            <article class="insights-chart-card"><div class="insights-chart-heading"><h2>User-initiated code changes per model</h2><span>Compares the total lines of code suggested and manually added by users, grouped by model used</span></div><canvas id="userModelChart"></canvas></article>
+            <article class="insights-chart-card"><div class="insights-chart-heading"><h2>Agent-initiated code changes per model</h2><span>Compares the total lines of code added and deleted by agents on behalf of users, grouped by model used</span></div><canvas id="agentModelChart"></canvas></article>
+            <article class="insights-chart-card"><div class="insights-chart-heading"><h2>User-initiated code changes per language</h2><span>Compares the total lines of code suggested and manually added by users, grouped by language used</span></div><canvas id="userLanguageChart"></canvas></article>
+            <article class="insights-chart-card"><div class="insights-chart-heading"><h2>Agent-initiated code changes per language</h2><span>Compares the total lines of code added and deleted by agents on behalf of users, grouped by language used</span></div><canvas id="agentLanguageChart"></canvas></article>
+            <article class="insights-chart-card"><div class="insights-chart-heading"><h2>模型效能对比图</h2><span>Throughput by model and trigger mode</span></div><canvas id="modelEfficiencyChart"></canvas></article>
+          </div>
+        </div>
+
+        <aside class="insights-panel">
+          <div class="insights-chart-heading"><h2>AI 洞察与优化建议</h2><span>Generated from current enterprise usage data</span></div>
+          <div id="insightList" class="insight-list"></div>
+        </aside>
+      </section>
+    </main>
+
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
+    <script src="/common.js"></script>
+    <script src="/insights.js"></script>
+  </body>
+</html>

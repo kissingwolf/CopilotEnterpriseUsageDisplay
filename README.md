@@ -37,6 +37,8 @@
 - **三层缓存架构** — 内存缓存（5 分钟） → SQLite 持久缓存（90 天） → GitHub API，大幅减少 API 调用
 - **ETag 条件请求** — 数据未变化时返回 304 Not Modified，不消耗 API 配额
 - **数据分析页面** — 独立页面提供用量趋势图、Top 用户排行柱状图、汇总统计卡片（30 天 / 90 天 / 1 年）
+- **Copilot Insights 看板** — 新增 `/insights` 页面，按 GitHub Copilot Insights 口径展示 `Copilot IDE Usage` 与 `Code Generation` 双 Tab，包括 Agent adoption、chat mode、code completions acceptance、模型与语言分布等图表
+- **首页快捷入口增强** — 首页信息栏新增“洞悉”按钮（`/insights`），与“数据分析”并列，便于在排行视图与 Insights 视图间快速切换
 - **数据分析图表自适应优化** — 图表在"趋势图 / Top用户"页签切换时会自动 resize，避免隐藏容器导致的首屏小图问题；Top 用户数量较多时按条目数自动增高容器，确保用户名标签完整显示
 - **Team 视角图** — 数据分析页新增"Team视角"Tab，右上角下拉框可单选 Team：全选时展示各 Team 人均请求量横向柱状排名；选择某 Team 后展示该 Team 请求量最多的 Top20 成员排名，成员名称遵循映射规则（已映射显示 AD 名，未映射显示 GitHub 登录名），图表高度随条目数自动扩展
 - **用户活跃性分析** — 数据分析页新增"用户活跃性"Tab，饼图按不活跃天数将全量席位用户分为 4 类：1~5日不活跃、6~10日不活跃、10日以上不活跃、注册后未活跃；支持 Team 单选过滤；点击饼图扇形在下方展开用户列表（显示名 / Team / 最后活跃），用户名遵循 AD 映射规则
@@ -64,6 +66,7 @@ routes/
   teams.js              Enterprise Teams 路由
   costcenter.js         Cost Center 管理路由
   analytics.js          数据分析路由（趋势、Top 用户、汇总）
+  insights.js           Copilot Insights 聚合路由（Usage + Code Generation）
   user-mapping.js       用户映射管理路由（上传、重载、成员列表）
   seats.js              Copilot 席位数据加载器（共享模块）
   auth.js               管理员登录/登出/session 路由（POST /admin/login, /admin/logout, GET /admin/session）
@@ -75,6 +78,7 @@ lib/
   billing-config.js     计费配置与费用计算
   date-utils.js         日期工具函数
   helpers.js            共享辅助函数
+  insights-aggregator.js Copilot Insights 聚合与规则引擎（report 字段归一化）
   logger.js             pino 结构化日志（dev 模式 pretty，生产 JSON）
   auth.js               管理员鉴权纯函数与中间件（verifyCredentials / requireAdminPage / requireAdminApi）
 public/
@@ -82,6 +86,7 @@ public/
   index.html / script.js      主页面（用量排行、排序、模态框、分页）
   costcenter.html / costcenter.js  Cost Center 管理页
   analytics.html / analytics.js    数据分析页（含数据新鲜度提示）
+  insights.html / insights.js      Copilot Insights 页面（Usage + Code Generation 双 Tab）
   billpage.html / billpage.js      Team 月度账单页
   user.html / user.js              用户映射管理页
   admin.html / admin.js            管理员登录页 / 控制台（登录态双视图切换）
@@ -92,6 +97,8 @@ test/
   helpers.test.js       辅助函数单元测试
   auth.test.js          管理员凭据校验单元测试（verifyCredentials）
   auth-routes.test.js   管理员登录/登出/session/守卫页面集成测试
+  insights-aggregator.test.js Insights 聚合器单元测试
+  insights-routes.test.js Insights 路由集成测试
 scripts/
   preflight-check.sh    启动前自检（Shell）
   preflight-check.js    启动前自检（Node）
@@ -145,6 +152,7 @@ data/
 | `GET` | `/api/analytics/daily-summary?range=30` | 汇总统计（总量、日均、有数据天数） |
 | `GET` | `/api/analytics/team-view?range=30[&team=TeamName]` | Team 视角：全选时返回各 Team 人均请求量；传入 team 参数时返回该 Team Top20 成员请求量 |
 | `GET` | `/api/analytics/quota-usage` | 本周期套餐用量：按当前自然月统计全量席位用户的配额使用率，并返回 5 档分桶明细 |
+| `GET` | `/api/insights?range=28` | Copilot Insights 聚合数据（Usage + Code Generation + AI 洞察建议），底层读取 `copilot/metrics/reports/enterprise-28-day/latest` signed report |
 | `GET` | `/api/bill?year=2026&month=4` | Team 月度账单（席位费 + 超额费 + 总费用，按 Team 分组） |
 | `GET` | `/api/bill/export?year=2026&month=4` | 导出 Team 月度账单为 Excel 文件（多 Sheet：每 Team 明细 + Total 汇总） |
 | `GET` | `/api/user/members/export` | 导出全量成员映射表为 Excel 文件（7 列：Github用户名、Team、AD用户名、AD邮箱、计划、最后活跃、映射状态） |
@@ -605,6 +613,28 @@ sudo systemctl reload nginx
 - 部署交接时，`.env` 文件权限建议设为 `chmod 600` 并归属服务账号，避免同服务器上其他用户读取 `ADMIN_PASSWORD_HASH` 与 `SESSION_SECRET`。
 
 ## 更新日志
+
+### v3.8 — Copilot Insights 使用率与代码生成看板
+
+- **新增公开页面 `/insights`** — 提供仿 GitHub Copilot Insights 的双 Tab 看板：Copilot IDE Usage 与 Code Generation，包含活跃用户、Agent adoption、最常用模型、代码吞吐、模型效能、语言分布等图表。
+- **新增 API `GET /api/insights`** — 单一聚合接口返回 Usage、Code Generation 与 AI 洞察建议；读取 `/enterprises/{enterprise}/copilot/metrics/reports/enterprise-28-day/latest`，下载 signed report links 后解析 `day_totals`，并用 `settings/billing/ai_credit/usage` 作为模型用量补充。
+- **新增洞察规则引擎** — `lib/insights-aggregator.js` 归一化 GitHub 原始字段并输出四类建议：ROI/Agent 采纳、模型配额优化、技术债重构健康度、语言覆盖率推广盲区。
+- **TDD 覆盖** — 新增 `test/insights-aggregator.test.js` 与 `test/insights-routes.test.js`，覆盖 usage 字段解析、智能洞察阈值、GitHub reports 路由行为。
+
+### v3.9 — Insights 真实数据口径对齐（Usage + Code Generation）
+
+- **修复 day_totals 乱序导致的最新日误取** — `lib/insights-aggregator.js` 对 report `day_totals` 统一按日期排序后再取最新日，修复 Agent adoption 从 `160/200` 偏移到 `154/189` 的问题。
+- **Agent adoption 与 GitHub 卡片对齐** — 使用 `monthly_active_agent_users / monthly_active_users`（按最新日）计算，并按 GitHub 展示口径输出整数百分比（如 `81%`）。
+- **补齐 Average chat requests per active user** — 从 report 字段 `user_initiated_interaction_count / daily_active_users` 生成 28 天序列，修复空图（0~1 轴）。
+- **补齐 Code completions 与 acceptance rate** — 从 `feature=code_completion` 聚合 `code_generation_activity_count` 与 `code_acceptance_activity_count`，新增 Code completions 图并修复 acceptance rate 空数据。
+- **修复 chat mode 分类误映射** — `chat_panel_agent_mode` 不再误归为 Ask，改为 Agent；同步修复 `requestsPerChatMode` 与 `modelPerChatMode` 的分类结果。
+- **修复 Code Generation agent 口径** — 以 `feature=agent_edit` 计算 Agent Contribution、Average lines deleted by agent、Agent-initiated 系列图（总体/按模型/按语言），并区分用户发起与代理发起数据集。
+- **Code Generation 说明文案对齐** — 卡片与图表说明更新为 GitHub Insights 风格（明确“last 28 days”“on behalf of users”“grouped by model/language”等口径）。
+- **测试与验证** — 补充并更新 `test/insights-aggregator.test.js`、`test/insights-routes.test.js`，并通过全量测试（128/128）。
+
+### v3.10 — 首页导航增强
+
+- **新增“洞悉”按钮** — 首页信息栏在“数据分析”右侧新增“洞悉”入口，点击跳转 `/insights`，提升看板切换效率。
 
 ### v3.7 — User Budget 独立管理页
 
