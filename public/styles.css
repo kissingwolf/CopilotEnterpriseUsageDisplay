@@ -1226,6 +1226,234 @@ tbody tr:hover {
   font-size: 13px;
 }
 
+/* ── Copilot Insights page ── */
+.insights-page {
+  padding: 28px 16px 40px;
+}
+
+.insights-card-shell {
+  max-width: 1320px;
+  overflow: hidden;
+}
+
+.insights-topbar {
+  align-items: flex-start;
+}
+
+.insights-subtitle {
+  margin: 6px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.insights-query-bar {
+  background: linear-gradient(180deg, #ffffff 0%, var(--bg-soft) 100%);
+}
+
+.insights-tabs {
+  padding-left: 32px;
+}
+
+.insights-pane {
+  padding: 0 24px 24px;
+}
+
+.insights-metrics {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+  padding: 22px 8px 16px;
+}
+
+.insights-metric-card {
+  min-height: 126px;
+  padding: 18px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: linear-gradient(135deg, #ffffff 0%, #f7faf8 100%);
+  box-shadow: var(--shadow-sm);
+}
+
+.insights-metric-card .label {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.2px;
+  text-transform: uppercase;
+}
+
+.insights-metric-card .value {
+  margin-top: 8px;
+  font-family: var(--font-heading);
+  font-size: clamp(24px, 2.4vw, 34px);
+  line-height: 1.1;
+  color: var(--accent-deep);
+}
+
+.insights-metric-detail {
+  margin-top: 8px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.insights-progress {
+  height: 7px;
+  margin-top: 12px;
+  border-radius: 999px;
+  background: var(--line);
+  overflow: hidden;
+}
+
+.insights-progress span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--accent), #2da44e);
+}
+
+.insights-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+  margin-bottom: 14px;
+}
+
+.insights-grid-two {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.insights-wide {
+  grid-column: 1 / -1;
+}
+
+.insights-chart-card {
+  min-height: 360px;
+  padding: 16px 16px 18px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #ffffff;
+  box-shadow: var(--shadow-sm);
+  overflow: hidden;
+}
+
+.insights-chart-card canvas {
+  width: 100% !important;
+  height: 280px !important;
+}
+
+.insights-wide canvas {
+  height: 320px !important;
+}
+
+.insights-chart-heading {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-bottom: 12px;
+}
+
+.insights-chart-heading h2 {
+  margin: 0;
+  font-family: var(--font-body);
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--ink);
+  letter-spacing: 0;
+}
+
+.insights-chart-heading span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.insights-panel {
+  margin: 0 24px 28px;
+  padding: 18px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: linear-gradient(135deg, #f8fbf9 0%, #ffffff 100%);
+}
+
+.insight-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.insight-item {
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-left: 4px solid var(--accent);
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.insight-item.severity-high { border-left-color: #b42318; }
+.insight-item.severity-medium { border-left-color: #bf8700; }
+.insight-item.severity-low { border-left-color: #0969da; }
+
+.insight-title {
+  font-weight: 700;
+  color: var(--ink);
+  margin-bottom: 6px;
+}
+
+.insight-item p {
+  margin: 0 0 8px;
+  color: var(--ink);
+  font-size: 13px;
+}
+
+.insight-evidence,
+.insight-recommendation,
+.insight-empty {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.insight-recommendation {
+  margin-top: 6px;
+  color: var(--accent-deep);
+  font-weight: 600;
+}
+
+@media (max-width: 920px) {
+  .insights-metrics,
+  .insights-grid,
+  .insight-list {
+    grid-template-columns: 1fr;
+  }
+
+  .insights-pane {
+    padding: 0 14px 18px;
+  }
+
+  .insights-panel {
+    margin: 0 14px 20px;
+  }
+}
+
+@media (max-width: 720px) {
+  .insights-topbar {
+    align-items: flex-start;
+  }
+
+  .insights-tabs {
+    padding-left: 12px;
+    overflow-x: auto;
+  }
+
+  .insights-chart-card {
+    min-height: 320px;
+    padding: 14px 12px;
+  }
+
+  .insights-chart-card canvas,
+  .insights-wide canvas {
+    height: 240px !important;
+  }
+}
+
 .activity-list-table th {
   text-align: left;
   padding: 6px 10px;

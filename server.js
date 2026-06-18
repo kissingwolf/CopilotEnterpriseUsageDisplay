@@ -121,6 +121,7 @@ function mapUrlToAction(url, method) {
     "GET /api/analytics/trends": "get_analytics_trends",
     "GET /api/analytics/top-users": "get_top_users",
     "GET /api/analytics/daily-summary": "get_daily_summary",
+    "GET /api/insights": "get_insights_dashboard_data",
     "GET /api/bill": "get_monthly_bill",
     "POST /api/bill/refresh": "force_refresh_monthly_bill",
     "GET /api/health": "health_check",
@@ -132,6 +133,7 @@ function mapUrlToAction(url, method) {
     "GET /": "view_dashboard",
     "GET /user": "view_mapping_page",
     "GET /analytics": "view_analytics_page",
+    "GET /insights": "view_insights_page",
     "GET /costcenter": "view_costcenter_page",
   };
 
@@ -155,6 +157,7 @@ const billModule = require("./routes/bill")({ ...deps, usageRouter });
 app.use(require("./routes/costcenter")({ ...deps, getMonthlyBillTeams: billModule.getMonthlyBillTeams }));
 app.use(require("./routes/user-budget")(deps));
 app.use(require("./routes/analytics")(deps));
+app.use(require("./routes/insights")(deps));
 app.use(require("./routes/user-mapping")(deps));
 app.use(billModule.router);
 
@@ -171,6 +174,10 @@ app.get("/api/health", (_req, res) => {
 /* ── Page routes ── */
 app.get("/billpage", (_req, res) => {
   res.sendFile(path.join(__dirname, "public", "billpage.html"));
+});
+
+app.get("/insights", (_req, res) => {
+  res.sendFile(path.join(__dirname, "public", "insights.html"));
 });
 
 /* ── Wildcard fallback (SPA) ── */
