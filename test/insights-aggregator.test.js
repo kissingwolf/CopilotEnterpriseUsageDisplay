@@ -265,4 +265,39 @@ describe("buildInsightsPayload", () => {
       activeUsers: 189,
     });
   });
+
+  it("excludes the report 'others' catch-all bucket from language and model charts", () => {
+    const payload = buildInsightsPayload({
+      metricsReport: {
+        dayTotals: [
+          {
+            day: "2026-06-17",
+            totals_by_language_feature: [
+              { language: "java", feature: "code_completion", loc_suggested_to_add_sum: 3000, loc_added_sum: 1200, loc_deleted_sum: 0 },
+              // GitHub's synthetic catch-all: language `others` paired with feature `others`,
+              // carrying non user-initiated deletions. Must not surface as a language.
+              { language: "others", feature: "others", loc_suggested_to_add_sum: 49781, loc_added_sum: 117075, loc_deleted_sum: 123791 },
+            ],
+            totals_by_model_feature: [
+              { model: "gpt-5.3-codex", feature: "chat_panel_ask_mode", user_initiated_interaction_count: 10, loc_suggested_to_add_sum: 1000, loc_added_sum: 300, loc_deleted_sum: 0 },
+              { model: "others", feature: "others", user_initiated_interaction_count: 3775, loc_suggested_to_add_sum: 14987, loc_added_sum: 78655, loc_deleted_sum: 30287 },
+            ],
+          },
+        ],
+      },
+    }, { range: 28 });
+
+    expect(payload.tabs.codeGeneration.charts.userInitiatedByLanguage).toEqual([
+      { label: "java", suggested: 3000, added: 1200, deleted: 0 },
+    ]);
+    expect(payload.tabs.codeGeneration.charts.userInitiatedByModel).toEqual([
+      { label: "gpt-5.3-codex", suggested: 1000, added: 300, deleted: 0 },
+    ]);
+    expect(payload.tabs.usage.charts.languageUsage).toEqual([
+      { label: "java", value: 3000, percent: 100 },
+    ]);
+    expect(payload.tabs.usage.charts.chatModelUsage).toEqual([
+      { label: "gpt-5.3-codex", value: 10, percent: 100 },
+    ]);
+  });
 });

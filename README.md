@@ -614,12 +614,16 @@ sudo systemctl reload nginx
 
 ## 更新日志
 
-### v3.8 — Copilot Insights 使用率与代码生成看板
+### v3.11 — Insights 排除 GitHub 报表 `others` 伪桶，语言/模型口径对齐
 
-- **新增公开页面 `/insights`** — 提供仿 GitHub Copilot Insights 的双 Tab 看板：Copilot IDE Usage 与 Code Generation，包含活跃用户、Agent adoption、最常用模型、代码吞吐、模型效能、语言分布等图表。
-- **新增 API `GET /api/insights`** — 单一聚合接口返回 Usage、Code Generation 与 AI 洞察建议；读取 `/enterprises/{enterprise}/copilot/metrics/reports/enterprise-28-day/latest`，下载 signed report links 后解析 `day_totals`，并用 `settings/billing/ai_credit/usage` 作为模型用量补充。
-- **新增洞察规则引擎** — `lib/insights-aggregator.js` 归一化 GitHub 原始字段并输出四类建议：ROI/Agent 采纳、模型配额优化、技术债重构健康度、语言覆盖率推广盲区。
-- **TDD 覆盖** — 新增 `test/insights-aggregator.test.js` 与 `test/insights-routes.test.js`，覆盖 usage 字段解析、智能洞察阈值、GitHub reports 路由行为。
+- **修复 “User-initiated/Agent-initiated code changes per language/model” 的 `others` 异常放大** — GitHub 28 天报表会把长尾 `(language|model) × feature` 组合汇总成一个合成的 `feature=others`（并配 `language/model=others`）兜底桶，其中混入了 `agent_edit`/`copilot_cli` 的删除活动（本例 language 桶 `suggested=49,781 / added=117,075 / deleted=123,791`，与 GitHub UI 的 “Other languages” 完全不是同一口径）。本地此前未过滤该伪桶，导致其被当作名为 `others` 的语言/模型直接渲染，柱子被严重放大。
+- **统一排除策略** — `lib/insights-aggregator.js` 新增 `isOthersFeature()`，在 `buildReportCodeChangesByLanguage`、`buildReportCodeChangesByModel`、`buildReportLanguageUsage`、`buildReportChatModelUsage`、`buildReportModelEfficiency` 中一并排除 `feature=others`，使按语言、按模型、模型效能、语言/模型用量等图表口径一致。
+- **mode 维度无需改动** — `totals_by_feature`（mode 维度）不含 `others` 伪 feature，按 mode 的图表不受影响（已通过真实报表确认）。
+- **验证** — 真实企业报表数据下各图表均不再出现 `others`，且真实语言数值与 GitHub 卡片一致（如 Java `suggested=17,017 / added=3,418`）。新增回归测试断言伪桶被排除，全量测试 129/129 通过。
+
+### v3.10 — 首页导航增强
+
+- **新增“洞悉”按钮** — 首页信息栏在“数据分析”右侧新增“洞悉”入口，点击跳转 `/insights`，提升看板切换效率。
 
 ### v3.9 — Insights 真实数据口径对齐（Usage + Code Generation）
 
@@ -632,9 +636,12 @@ sudo systemctl reload nginx
 - **Code Generation 说明文案对齐** — 卡片与图表说明更新为 GitHub Insights 风格（明确“last 28 days”“on behalf of users”“grouped by model/language”等口径）。
 - **测试与验证** — 补充并更新 `test/insights-aggregator.test.js`、`test/insights-routes.test.js`，并通过全量测试（128/128）。
 
-### v3.10 — 首页导航增强
+### v3.8 — Copilot Insights 使用率与代码生成看板
 
-- **新增“洞悉”按钮** — 首页信息栏在“数据分析”右侧新增“洞悉”入口，点击跳转 `/insights`，提升看板切换效率。
+- **新增公开页面 `/insights`** — 提供仿 GitHub Copilot Insights 的双 Tab 看板：Copilot IDE Usage 与 Code Generation，包含活跃用户、Agent adoption、最常用模型、代码吞吐、模型效能、语言分布等图表。
+- **新增 API `GET /api/insights`** — 单一聚合接口返回 Usage、Code Generation 与 AI 洞察建议；读取 `/enterprises/{enterprise}/copilot/metrics/reports/enterprise-28-day/latest`，下载 signed report links 后解析 `day_totals`，并用 `settings/billing/ai_credit/usage` 作为模型用量补充。
+- **新增洞察规则引擎** — `lib/insights-aggregator.js` 归一化 GitHub 原始字段并输出四类建议：ROI/Agent 采纳、模型配额优化、技术债重构健康度、语言覆盖率推广盲区。
+- **TDD 覆盖** — 新增 `test/insights-aggregator.test.js` 与 `test/insights-routes.test.js`，覆盖 usage 字段解析、智能洞察阈值、GitHub reports 路由行为。
 
 ### v3.7 — User Budget 独立管理页
 
