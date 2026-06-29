@@ -614,6 +614,12 @@ sudo systemctl reload nginx
 
 ## 更新日志
 
+### v3.12 — 修复 Cost Center 套餐外费用/预算 spent 为 0（`copilot_ai_unit` SKU 漏取）
+
+- **修复 spent 始终为 0** — Cost Center 与 Team 月度账单的「套餐外附加费 / 套餐外预算」对应 GitHub Budgets 的 `spent`，数据来自 `usage/summary` 接口的 AI Credits 项；但该接口实际返回的 SKU 为 `copilot_ai_unit`、unitType 为 `ai-units`，未命中 `isCopilotBillingItem` 的 SKU 正则而被整笔过滤，导致 spent=0（如 SITCDigitalTeam 实际 $200.70 被丢弃）。
+- **过滤口径对齐** — `lib/helpers.js` 的 `isCopilotBillingItem` 新增 `ai_unit` / `ai-units` 命中，并显式排除席位订阅项 `copilot_for_business`（unitType `user-months`），避免席位费混入 spent。
+- **验证** — 实测 `usage/summary?cost_center_id=` 三接口 SKU 命名不一致（`Copilot AI Credits` / `copilot_ai_unit` / `Copilot Business`）；修复后 AI 用量正确保留、席位费排除。新增回归测试，全量 131/131 通过。
+
 ### v3.11 — Insights 排除 GitHub 报表 `others` 伪桶，语言/模型口径对齐
 
 - **修复 “User-initiated/Agent-initiated code changes per language/model” 的 `others` 异常放大** — GitHub 28 天报表会把长尾 `(language|model) × feature` 组合汇总成一个合成的 `feature=others`（并配 `language/model=others`）兜底桶，其中混入了 `agent_edit`/`copilot_cli` 的删除活动（本例 language 桶 `suggested=49,781 / added=117,075 / deleted=123,791`，与 GitHub UI 的 “Other languages” 完全不是同一口径）。本地此前未过滤该伪桶，导致其被当作名为 `others` 的语言/模型直接渲染，柱子被严重放大。
