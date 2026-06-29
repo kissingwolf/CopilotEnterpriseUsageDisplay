@@ -199,6 +199,14 @@ describe("Copilot billing usage items", () => {
     expect(helpers.isCopilotBillingItem({ product: "Actions", sku: "Actions Linux", unitType: "minutes" })).toBe(false);
   });
 
+  it("recognizes usage/summary AI units SKU (copilot_ai_unit)", () => {
+    expect(helpers.isCopilotBillingItem({ product: "Copilot", sku: "copilot_ai_unit", unitType: "ai-units" })).toBe(true);
+  });
+
+  it("excludes seat subscription SKU (copilot_for_business)", () => {
+    expect(helpers.isCopilotBillingItem({ product: "Copilot", sku: "copilot_for_business", unitType: "user-months" })).toBe(false);
+  });
+
   it("prefers netAmount when normalizing billed amount", () => {
     expect(helpers.normalizeBillingAmount({ netAmount: 7, grossAmount: 10, discountAmount: 3 })).toEqual({ amount: 7, amountSource: "netAmount" });
   });
