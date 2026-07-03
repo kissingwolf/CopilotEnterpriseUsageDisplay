@@ -4,7 +4,7 @@ uploads/
 data/
 .claude/
 .vscode/
-.qoder/*
+!.qoder/*
 !.qoder/repowiki
 .qoder/repowiki/*
 !.qoder/repowiki/zh
