@@ -614,6 +614,12 @@ sudo systemctl reload nginx
 
 ## 更新日志
 
+### v3.13 — Insights「Most used chat model」排除 `unknown` 桶
+
+- **修复 Most used chat model 显示 `unknown`** — GitHub 28 天报表把无法归属到具体模型的聊天活动（主要是 agent 模式的工具调用）汇总到一个合成的 `model=unknown` 桶（本例 5,456 次 / 34.5%，为最大桶），而 `buildReportChatModelUsage` 此前只排除 `feature=others`、未排除 `model=unknown`，导致它赢得排名、卡片显示 `unknown`。
+- **统一排除策略** — `lib/insights-aggregator.js` 新增 `isUnknownModel()`，在 `buildReportChatModelUsage` 中一并跳过 `model=unknown` 桶，使「Chat model usage」图表与「Most used chat model」卡片对齐 GitHub UI 只展示可归属模型的口径。
+- **非回归确认** — 该 `unknown` 过滤为首次引入（v3.11 仅处理 `others` 伪桶），并非既有修复回归。新增回归测试，全量 132/132 通过。
+
 ### v3.12 — 修复 Cost Center 套餐外费用/预算 spent 为 0（`copilot_ai_unit` SKU 漏取）
 
 - **修复 spent 始终为 0** — Cost Center 与 Team 月度账单的「套餐外附加费 / 套餐外预算」对应 GitHub Budgets 的 `spent`，数据来自 `usage/summary` 接口的 AI Credits 项；但该接口实际返回的 SKU 为 `copilot_ai_unit`、unitType 为 `ai-units`，未命中 `isCopilotBillingItem` 的 SKU 正则而被整笔过滤，导致 spent=0（如 SITCDigitalTeam 实际 $200.70 被丢弃）。

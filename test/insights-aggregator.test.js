@@ -300,4 +300,27 @@ describe("buildInsightsPayload", () => {
       { label: "gpt-5.3-codex", value: 10, percent: 100 },
     ]);
   });
+
+  it("excludes the unattributed 'unknown' model from chat model usage and most-used metric", () => {
+    const payload = buildInsightsPayload({
+      metricsReport: {
+        dayTotals: [
+          {
+            day: "2026-06-17",
+            totals_by_model_feature: [
+              // Agent-mode activity GitHub cannot attribute to a specific model.
+              // It is the largest bucket but must not win "Most used chat model".
+              { model: "unknown", feature: "chat_panel_agent_mode", user_initiated_interaction_count: 5456 },
+              { model: "gpt-5.3-codex", feature: "chat_panel_ask_mode", user_initiated_interaction_count: 3414 },
+            ],
+          },
+        ],
+      },
+    }, { range: 28 });
+
+    expect(payload.tabs.usage.charts.chatModelUsage).toEqual([
+      { label: "gpt-5.3-codex", value: 3414, percent: 100 },
+    ]);
+    expect(payload.tabs.usage.metrics.mostUsedChatModel).toBe("gpt-5.3-codex");
+  });
 });
