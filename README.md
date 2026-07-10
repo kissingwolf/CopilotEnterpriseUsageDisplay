@@ -192,7 +192,16 @@ ENTERPRISE_SLUG=YourEnterprise
 PRODUCT=Copilot
 GITHUB_API_VERSION=2026-03-10
 BILLING_MODEL=auto
+
+# 可选：Insights 页面 LLM 动态洞察（不配置则仅用规则引擎）
+LLM_URL=https://your-endpoint/v1
+LLM_API_KEY=sk-xxxx
+LLM_MODEL=qwen3.7-plus
+LLM_ENABLED=true
+LLM_TIMEOUT_MS=15000
 ```
+
+> LLM 相关变量为可选项。留空或调用失败/超时时，Insights 会自动回退到内置规则引擎，功能不受影响。真实 `LLM_API_KEY` 仅写入本地 `.env`（已 gitignore），切勿提交仓库。
 
 ### 启动
 
@@ -267,6 +276,12 @@ node ./scripts/preflight-check.js --strict
 | ADMIN_USER | 条件必填（启用后台需要） | 空 | ADMIN_USER=admin | 管理员登录用户名；未设置时 `/admin/login` 总返回 401，受护页面无法进入 |
 | ADMIN_PASSWORD_HASH | 条件必填（启用后台需要） | 空 | ADMIN_PASSWORD_HASH=\$2b\$12\$... | bcrypt 哈希（建议 cost ≥ 10），使用 `node scripts/hash-admin-password.js` 生成；空值拒绝登录（不允许空配置绕过） |
 | SESSION_SECRET | 生产必填 | 空 | SESSION_SECRET=$(node -e "console.log(require('crypto').randomBytes(48).toString('hex'))") | express-session 签名密钥；**生产环境未设置则拒绝启动**；开发环境未设置时会生成临时密钥，重启后会话会丢失 |
+| LLM_URL | 否（Insights LLM 洞察） | 空（关闭） | LLM_URL=https://.../v1 | OpenAI 兼容 base URL（以 /v1 结尾）；留空则仅用规则引擎 |
+| LLM_API_KEY | 条件必填（启用 LLM 洞察需要） | 空 | LLM_API_KEY=sk-xxxx | LLM API Key（保密，仅放 .env，切勿提交仓库） |
+| LLM_MODEL | 条件必填（启用 LLM 洞察需要） | 空 | LLM_MODEL=qwen3.7-plus | LLM 模型名 |
+| LLM_ENABLED | 否 | true | LLM_ENABLED=false | 置为 false 关闭 LLM，仅用规则引擎 |
+| LLM_TIMEOUT_MS | 否 | 15000 | LLM_TIMEOUT_MS=20000 | LLM 请求超时（毫秒），超时自动回退规则引擎 |
+
 
 ## 缓存架构
 
@@ -613,6 +628,24 @@ sudo systemctl reload nginx
 - 部署交接时，`.env` 文件权限建议设为 `chmod 600` 并归属服务账号，避免同服务器上其他用户读取 `ADMIN_PASSWORD_HASH` 与 `SESSION_SECRET`。
 
 ## 更新日志
+
+### v3.15 — Insights 规则引擎扩展至 10 条兜底规则
+
+- **兜底规则从 4 条扩展到 10 条** — `lib/insights-aggregator.js` 的 `generateInsightRecommendations` 新增 6 类触发条件，喂入更多已聚合指标（IDE 活跃用户、聊天模型分布、补全接受率与建议量、AI 参与变更行数）：
+  - 原有：`roi` 高价值警报、`refactoring` 代码资产重构评估、`model-allocation` 模型配额优化、`language-coverage` 技术栈失衡提示。
+  - 新增：`adoption-gap` Agent 采纳率偏低（<30%）、`completion-acceptance-low` 补全接受率偏低（<20% 且建议量≥50）、`completion-acceptance-high` 补全接受率优秀（≥35%）、`model-concentration` 模型集中度偏高（首位聊天模型>60%）、`language-concentration` 语言集中度偏高（首位语言>50%）、`scaled-output` AI 规模化产出治理（AI 参与变更>10 万行）。
+- **兜底更丰富** — 即使 LLM 不可用/超时，也能依据更广的使用画像给出合理建议，覆盖采纳率、接受率、模型/语言集中度、规模化治理等维度。
+- **TDD 覆盖** — `test/insights-aggregator.test.js` 新增规则目录直测（7 条），并更新受影响的断言，全量测试 149/149 通过。
+
+### v3.14 — Insights 接入 LLM 动态洞察（规则引擎兜底）
+
+- **新增 LLM 动态洞察** — `lib/llm-insights.js` 调用 OpenAI 兼容接口（`LLM_URL` + `LLM_API_KEY` + `LLM_MODEL`），将聚合指标转成自然语言优化建议，替代此前完全硬编码的 if 阈值文案。
+- **规则引擎兜底 + 结果合并** — `routes/insights.js` 在 `buildInsightsPayload` 之后调用 LLM，`mergeInsights` 将 LLM 与规则建议按严重度合并（LLM 在前）；LLM 未配置/超时/报错时自动回退，仅保留规则建议，功能不受影响。
+- **超时与容错** — `AbortController` 控制 `LLM_TIMEOUT_MS`（默认 15s）超时；异常统一 `logger.warn` 记录并降级。
+- **推理模型兼容（关闭思维链）** — 请求体固定携带 `enable_thinking: false`。实测 Qwen 等推理模型默认开启思维链会消耗 2000+ reasoning tokens、单次请求耗时约 59s 导致必然超时回退；关闭后耗时降至约 5–13s，`meta.llm` 稳定返回 `{used:true}`。该字段对不支持它的 OpenAI 兼容端会被忽略，故为安全默认。推理模型建议将 `LLM_TIMEOUT_MS` 设为 30000 留足余量。
+- **前端来源标记** — Insights 面板每条建议显示「AI」/「规则」徽章，meta 行显示 `AI: on / fallback`。
+- **安全脱敏** — 真实密钥仅存 `.env`（已 gitignore），README/代码仅用占位符。
+- **TDD 覆盖** — 新增 `test/llm-insights.test.js`，覆盖 JSON 围栏解析、severity 归一化、合并排序与配置校验。
 
 ### v3.13 — Insights「Most used chat model」排除 `unknown` 桶
 

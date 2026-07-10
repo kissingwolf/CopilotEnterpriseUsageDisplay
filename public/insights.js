@@ -209,8 +209,11 @@
       return;
     }
     insightList.innerHTML = items.map(function (item) {
+      var badge = item.source === "llm"
+        ? '<span class="insight-source insight-source-llm">AI</span>'
+        : '<span class="insight-source insight-source-rule">规则</span>';
       return '<article class="insight-item severity-' + C.escapeHtml(item.severity || "low") + '">' +
-        '<div class="insight-title">' + C.escapeHtml(item.title) + '</div>' +
+        '<div class="insight-title">' + badge + C.escapeHtml(item.title) + '</div>' +
         '<p>' + C.escapeHtml(item.message) + '</p>' +
         '<div class="insight-evidence">' + C.escapeHtml(item.evidence || "") + '</div>' +
         '<div class="insight-recommendation">' + C.escapeHtml(item.recommendation || "") + '</div>' +
@@ -224,7 +227,8 @@
     renderUsageCharts(data);
     renderCodeCharts(data);
     renderInsights(data.insights || []);
-    meta.textContent = "Timeframe: Last " + data.meta.range + " days | Source: " + data.meta.source + " | " + C.formatTs(data.meta.generatedAt);
+    var aiStatus = data.meta.llm ? (data.meta.llm.used ? " | AI: on" : " | AI: fallback") : "";
+    meta.textContent = "Timeframe: Last " + data.meta.range + " days | Source: " + data.meta.source + aiStatus + " | " + C.formatTs(data.meta.generatedAt);
     setError((data.meta.warnings || []).join("；"));
   }
 

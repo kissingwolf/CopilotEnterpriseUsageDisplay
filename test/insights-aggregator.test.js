@@ -95,6 +95,7 @@ describe("buildInsightsPayload", () => {
     ]);
     expect(payload.insights.map((item) => item.title)).toEqual([
       "模型配额优化",
+      "语言集中度偏高",
       "技术栈失衡提示",
     ]);
   });
@@ -322,5 +323,40 @@ describe("buildInsightsPayload", () => {
       { label: "gpt-5.3-codex", value: 3414, percent: 100 },
     ]);
     expect(payload.tabs.usage.metrics.mostUsedChatModel).toBe("gpt-5.3-codex");
+  });
+});
+
+describe("generateInsightRecommendations rule catalog", () => {
+  const { generateInsightRecommendations } = require("../lib/insights-aggregator").__testables;
+  const typesOf = (summary) => generateInsightRecommendations(summary).map((item) => item.type);
+
+  it("flags a low Agent adoption gap", () => {
+    expect(typesOf({ agentAdoption: { percent: 12, activeUsers: 120 } })).toContain("adoption-gap");
+  });
+
+  it("flags low completion acceptance with enough suggestions", () => {
+    expect(typesOf({ completionAcceptanceRate: 14, completionSuggestions: 200 })).toContain("completion-acceptance-low");
+    // Not enough suggestions -> no signal
+    expect(typesOf({ completionAcceptanceRate: 14, completionSuggestions: 10 })).not.toContain("completion-acceptance-low");
+  });
+
+  it("praises high completion acceptance", () => {
+    expect(typesOf({ completionAcceptanceRate: 42 })).toContain("completion-acceptance-high");
+  });
+
+  it("flags chat model concentration", () => {
+    expect(typesOf({ chatModelUsage: [{ label: "gpt-5", percent: 72 }] })).toContain("model-concentration");
+  });
+
+  it("flags a dominant language", () => {
+    expect(typesOf({ languageUsage: [{ label: "Java", percent: 63 }] })).toContain("language-concentration");
+  });
+
+  it("flags scaled AI output for governance", () => {
+    expect(typesOf({ linesChangedWithAi: 250000 })).toContain("scaled-output");
+  });
+
+  it("returns no recommendations when nothing is triggered", () => {
+    expect(generateInsightRecommendations({})).toEqual([]);
   });
 });

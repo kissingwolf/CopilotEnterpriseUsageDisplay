@@ -3,6 +3,7 @@ const { requiredEnv } = require("../lib/billing-config");
 const { githubGetJson } = require("../lib/github-api");
 const { writeError } = require("../lib/helpers");
 const { buildInsightsPayload } = require("../lib/insights-aggregator");
+const { generateLlmInsights, mergeInsights } = require("../lib/llm-insights");
 
 function parseRange(value) {
   const range = Number(value || 28);
@@ -110,6 +111,13 @@ module.exports = function createInsightsRouter() {
       const sources = await fetchLiveSources(range);
       const data = buildInsightsPayload(sources, { range });
       data.meta.warnings = sources.warnings || [];
+
+      // LLM 动态洞察；失败/超时自动回退规则引擎结果
+      const ruleInsights = data.insights || [];
+      const llm = await generateLlmInsights(data);
+      data.insights = mergeInsights(ruleInsights, llm.insights);
+      data.meta.llm = { used: llm.used, reason: llm.reason };
+
       data.meta.source = data.meta.warnings.length > 0 ? "github-partial" : "github-reports";
       res.json({ ok: true, data });
     } catch (error) {

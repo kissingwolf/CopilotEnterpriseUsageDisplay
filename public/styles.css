@@ -1398,6 +1398,19 @@ tbody tr:hover {
   margin-bottom: 6px;
 }
 
+.insight-source {
+  display: inline-block;
+  margin-right: 6px;
+  padding: 0 6px;
+  border-radius: 8px;
+  font-size: 11px;
+  line-height: 18px;
+  vertical-align: middle;
+}
+
+.insight-source-llm { background: #6f42c1; color: #ffffff; }
+.insight-source-rule { background: #e1e4e8; color: #444444; }
+
 .insight-item p {
   margin: 0 0 8px;
   color: var(--ink);
