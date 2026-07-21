@@ -14,6 +14,12 @@
 - [public/billpage.js](file://public/billpage.js)
 </cite>
 
+## 更新摘要
+**变更内容**
+- 修复了Cost Center预算计算的关键bug，正确识别copilot_ai_unit SKU与ai-units unitType
+- 更新了isCopilotBillingItem函数的SKU匹配逻辑，确保AI Credits消费的正确计费
+- 增强了测试用例覆盖，验证修复后的SKU识别功能
+
 ## 目录
 1. [简介](#简介)
 2. [项目结构](#项目结构)
@@ -268,12 +274,44 @@ BillingConfig --> AiCreditsPlanConfig
 
 **图表来源**
 - [lib/billing-config.js:16-32](file://lib/billing-config.js#L16-L32)
-- [lib/billing-config.js:58-69](file://lib/billing-config.js#L58-L69)
+- [lib/billing-config.js:58-69](file://lib/billing-config.js#L58-69)
 
 **章节来源**
 - [lib/billing-config.js:1-84](file://lib/billing-config.js#L1-L84)
 - [routes/billing.js:17-329](file://routes/billing.js#L17-L329)
 - [routes/bill.js:61-624](file://routes/bill.js#L61-L624)
+
+### SKU识别与过滤机制
+
+**更新** 修复了Cost Center预算计算中的关键bug，确保AI Credits消费的正确计费
+
+系统通过`isCopilotBillingItem`函数实现智能的SKU识别和过滤机制：
+
+```mermaid
+flowchart TD
+A[输入billing item] --> B{product == copilot?}
+B --> |否| C[返回false - 非Copilot项目]
+B --> |是| D[提取sku和unitType]
+D --> E{是否包含席位订阅关键词?}
+E --> |是| F[返回false - 排除席位费]
+E --> |否| G{是否匹配AI Credits模式?}
+G --> |是| H[返回true - 计入AI Credits]
+G --> |否| I{是否匹配传统PRU模式?}
+I --> |是| J[返回true - 计入传统模式]
+I --> |否| K[返回false - 不匹配任何模式]
+```
+
+**图表来源**
+- [lib/helpers.js:129-136](file://lib/helpers.js#L129-L136)
+
+**修复详情**：
+- **新增AI Credits SKU支持**：正确识别`copilot_ai_unit` SKU和`ai-units` unitType
+- **席位订阅排除**：显式排除`copilot_for_business`（unitType `user-months`），避免席位费混入spent
+- **正则表达式增强**：在SKU匹配中添加`ai[_ ]unit`模式，在unitType匹配中添加`ai[_ -]units?`模式
+
+**章节来源**
+- [lib/helpers.js:129-136](file://lib/helpers.js#L129-L136)
+- [test/helpers.test.js:202-208](file://test/helpers.test.js#L202-L208)
 
 ## 依赖关系分析
 
@@ -353,9 +391,15 @@ BetterSqlite3 --> LruCache
 - 验证ExcelJS库版本兼容性
 - 确认数据格式符合导出要求
 
+**5. Cost Center预算显示为0**
+- **已修复**：v3.12版本修复了`copilot_ai_unit` SKU漏取问题
+- 检查`isCopilotBillingItem`函数是否正确识别AI Credits SKU
+- 验证GitHub API返回的SKU格式是否符合预期
+
 **章节来源**
 - [lib/github-api.js:176-233](file://lib/github-api.js#L176-L233)
 - [routes/bill.js:401-484](file://routes/bill.js#L401-L484)
+- [README.md:656-660](file://README.md#L656-L660)
 
 ## 结论
 
@@ -368,5 +412,8 @@ AI Credits 账单支持模块为 GitHub Copilot 企业用户提供了完整的�
 - **高性能缓存架构**：大幅减少GitHub API调用，提高系统响应速度
 - **完整的审计功能**：提供详细的金额来源和数据处理记录
 - **灵活的导出功能**：支持Excel等多种格式的数据导出
+- **准确的SKU识别**：正确识别AI Credits相关SKU，确保计费准确性
+
+**最新更新**：v3.12版本修复了Cost Center预算计算的关键bug，通过增强`isCopilotBillingItem`函数的SKU匹配逻辑，确保`copilot_ai_unit` SKU和`ai-units` unitType被正确识别，解决了AI Credits消费被错误过滤导致预算显示为0的问题。
 
 该模块的设计充分体现了现代Web应用的最佳实践，为GitHub Copilot的企业用户提供了可靠、高效、易用的账单管理解决方案。

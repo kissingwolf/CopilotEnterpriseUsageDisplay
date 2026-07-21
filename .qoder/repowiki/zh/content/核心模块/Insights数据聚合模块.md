@@ -21,6 +21,7 @@
 - 开发前端页面(public/insights.html, public/insights.js)提供可视化界面
 - 创建完整的测试套件(test/insights-aggregator.test.js, test/insights-routes.test.js)
 - 集成智能洞察引擎和业务规则推荐系统
+- **大幅增强** 规则引擎从4个扩展到10个推荐类型，包括Agent采用率差距检测、完成接受率分析、模型集中风险等新功能
 - **新增** GitHub报表others桶过滤功能，确保数据准确性与GitHub UI对齐
 
 ## 目录
@@ -45,7 +46,7 @@ Insights数据聚合模块是Copilot Enterprise Usage Display项目中的核心�
 - 智能洞察：基于阈值规则生成优化建议和最佳实践指导
 - 可视化准备：生成前端图表所需的标准化数据结构
 
-**更新** 新增完整的Copilot Insights仪表板功能，提供双Tab看板：Copilot IDE Usage与Code Generation，包含活跃用户、Agent adoption、最常用模型、代码吞吐、模型效能、语言分布等图表。**新增** GitHub报表others桶过滤功能，确保数据准确性与GitHub UI对齐。
+**大幅增强** 规则引擎现已支持10种不同类型的业务洞察，涵盖ROI优化、Agent采用率差距检测、代码重构评估、模型配额优化、补全接受率分析、模型集中度监控、语言分布分析、技术栈平衡检查以及AI规模化产出治理等多个维度。**新增** GitHub报表others桶过滤功能，确保数据准确性与GitHub UI对齐。
 
 **章节来源**
 - [README.md:617-622](file://README.md#L617-L622)
@@ -79,7 +80,7 @@ end
 - [insights.html:1-81](file://public/insights.html#L1-L81)
 - [insights.js:1-263](file://public/insights.js#L1-L263)
 - [insights.js:1-129](file://routes/insights.js#L1-L129)
-- [insights-aggregator.js:1-570](file://lib/insights-aggregator.js#L1-L570)
+- [insights-aggregator.js:1-671](file://lib/insights-aggregator.js#L1-L671)
 
 **章节来源**
 - [README.md:617-622](file://README.md#L617-L622)
@@ -108,10 +109,22 @@ end
 - `buildAgentAdoption`: 计算Agent采用率
 - `buildReportAgentAdoption`: 从报告数据计算Agent采用率
 
-**更新** 新增完整的智能洞察规则引擎，支持ROI优化、代码重构、模型配额优化、技术栈平衡等四类业务洞察。**新增** `isOthersFeature()` 函数用于排除GitHub合成的'others'桶，确保数据准确性与GitHub UI对齐。
+**大幅增强** 智能洞察规则引擎现已支持10种不同类型的业务洞察，包括：
+1. **ROI高价值警报** - 深度Agent研发模式检测
+2. **Agent采纳率偏低** - 能力未规模化落地预警
+3. **代码资产重构评估** - 大量删除即重构信号识别
+4. **模型配额优化** - Agent模式下模型表现分化分析
+5. **补全接受率偏低** - 上下文或建议质量影响信任度检测
+6. **模型集中度偏高** - 单点依赖与成本波动风险预警
+7. **补全接受率优秀** - 可作为最佳实践样板识别
+8. **语言集中度偏高** - 单一语言主导分析
+9. **技术栈失衡提示** - 核心语言高、TypeScript低检测
+10. **AI规模化产出治理** - 变更量达规模化水平预警
+
+**新增** `isOthersFeature()` 函数用于排除GitHub合成的'others'桶，确保数据准确性与GitHub UI对齐。
 
 **章节来源**
-- [insights-aggregator.js:1-570](file://lib/insights-aggregator.js#L1-L570)
+- [insights-aggregator.js:1-671](file://lib/insights-aggregator.js#L1-L671)
 
 ### 路由处理器 (routes/insights.js)
 
@@ -176,7 +189,7 @@ GitHub-->>Route : 返回原始数据
 Route->>Aggregator : 调用数据聚合函数
 Aggregator->>Aggregator : 标准化数据
 Aggregator->>Aggregator : 计算指标
-Aggregator->>Aggregator : 生成洞察建议
+Aggregator->>Aggregator : 生成10类洞察建议
 Aggregator-->>Route : 返回聚合数据
 Route-->>Client : 返回JSON响应
 Note over Route,Cache : 错误处理和警告机制
@@ -184,7 +197,7 @@ Note over Route,Cache : 错误处理和警告机制
 
 **图表来源**
 - [insights.js:107-118](file://routes/insights.js#L107-L118)
-- [insights-aggregator.js:436-545](file://lib/insights-aggregator.js#L436-L545)
+- [insights-aggregator.js:530-646](file://lib/insights-aggregator.js#L530-L646)
 
 ### 数据流处理
 
@@ -193,13 +206,13 @@ Insights模块的数据处理流程包括以下几个关键步骤：
 1. **数据获取**: 从GitHub API获取Copilot使用报告和模型使用数据
 2. **数据标准化**: 将不同格式的数据转换为统一的标准结构
 3. **指标计算**: 计算各种业务指标和统计数据
-4. **洞察生成**: 基于阈值规则生成智能建议
+4. **洞察生成**: 基于10类阈值规则生成智能建议
 5. **数据包装**: 将结果包装为前端友好的格式
 
-**更新** 新增智能洞察引擎，支持四类业务规则：ROI优化、代码重构、模型配额优化、技术栈平衡。**新增** others桶过滤逻辑，确保数据准确性与GitHub UI对齐。
+**大幅增强** 智能洞察引擎现支持10种业务规则类型，涵盖AI工具采用率、代码生成效率、模型使用优化、技术栈平衡、规模化产出治理等多个方面。**新增** others桶过滤逻辑，确保数据准确性与GitHub UI对齐。
 
 **章节来源**
-- [insights-aggregator.js:436-545](file://lib/insights-aggregator.js#L436-L545)
+- [insights-aggregator.js:530-646](file://lib/insights-aggregator.js#L530-L646)
 
 ## 详细组件分析
 
@@ -213,7 +226,7 @@ Insights模块的数据处理流程包括以下几个关键步骤：
 flowchart TD
 A[原始数据输入] --> B[数据标准化]
 B --> C[指标计算]
-C --> D[洞察生成]
+C --> D[10类洞察生成]
 D --> E[最终数据包]
 B --> B1[normalizeLanguageUsage]
 B --> B2[normalizeModelEfficiency]
@@ -223,28 +236,42 @@ C --> C1[buildReportRequestsByMode]
 C --> C2[buildReportAverageChatRequests]
 C --> C3[buildReportCompletionAcceptance]
 C --> C4[buildReportCodeCompletions]
-D --> D1[generateInsightRecommendations]
-D --> D2[buildAgentAdoption]
+D --> D1[ROI高价值警报]
+D --> D2[Agent采纳率检测]
+D --> D3[代码重构评估]
+D --> D4[模型配额优化]
+D --> D5[补全接受率分析]
+D --> D6[模型集中度监控]
+D --> D7[补全接受率优秀]
+D --> D8[语言集中度分析]
+D --> D9[技术栈失衡提示]
+D --> D10[AI规模化产出治理]
 ```
 
 **图表来源**
-- [insights-aggregator.js:10-570](file://lib/insights-aggregator.js#L10-L570)
+- [insights-aggregator.js:10-671](file://lib/insights-aggregator.js#L10-L671)
 
 #### 智能洞察规则引擎
 
-洞察引擎基于预定义的业务规则生成优化建议：
+洞察引擎基于预定义的10类业务规则生成优化建议：
 
-| 规则类型 | 触发条件 | 建议内容 |
-|---------|---------|---------|
-| ROI优化 | Agent采用率>70%，Agent贡献>40% | 建议进行高级Agent培训和模板沉淀 |
-| 代码重构 | 平均Agent删除行数>400 | 建议结合CI/CD评估重构安全性 |
-| 模型优化 | 多个Agent模型存在差异 | 建议将高性能模型优先分配给复杂场景 |
-| 技术栈平衡 | 核心语言高采用率但TypeScript低 | 建议为前端团队配置统一提示词 |
+| 规则类型 | 触发条件 | 严重级别 | 建议内容 |
+|---------|---------|---------|---------|
+| ROI高价值警报 | Agent采用率>70%，Agent贡献>40% | 高 | 建议进行进阶Agent培训和模板沉淀 |
+| Agent采纳率偏低 | Agent采用率<30%且活跃用户>0 | 中 | 建议开展Agent模式实操培训与内部案例分享 |
+| 代码资产重构评估 | 平均Agent删除行数>400 | 中 | 建议结合CI/CD的单元测试覆盖率评估重构安全性 |
+| 模型配额优化 | 多个Agent模型存在差异 | 中 | 建议将复杂Agent模式的底层模型优先分配给高吞吐模型 |
+| 补全接受率偏低 | 补全接受率<20%且建议数>=50 | 中 | 建议完善copilot-instructions.md上下文和优化提示词 |
+| 模型集中度偏高 | 单模型占比>60% | 中 | 建议按任务类型评估多模型分配策略 |
+| 补全接受率优秀 | 补全接受率>=35% | 低 | 建议沉淀当前高接受率团队的最佳实践 |
+| 语言集中度偏高 | 单一语言占比>50% | 低 | 建议针对主力语言沉淀提示词模板 |
+| 技术栈失衡提示 | 核心语言高但TypeScript<10% | 低 | 建议为前端团队配置统一的提示词上下文 |
+| AI规模化产出治理 | AI参与变更量>100000行 | 低 | 建议强化AI生成代码的评审、测试覆盖与安全扫描门禁 |
 
-**更新** 新增四类智能洞察规则，涵盖AI工具采用率、代码生成效率、模型使用优化和技术栈平衡等方面。**新增** others桶过滤功能，确保数据准确性。
+**大幅增强** 规则引擎从原有的4个类型扩展到10个类型，新增了Agent采用率差距检测、补全接受率分析、模型集中度监控、技术栈平衡检查、AI规模化产出治理等新功能。
 
 **章节来源**
-- [insights-aggregator.js:374-434](file://lib/insights-aggregator.js#L374-L434)
+- [insights-aggregator.js:383-528](file://lib/insights-aggregator.js#L383-L528)
 
 ### 路由处理器分析
 
@@ -335,7 +362,7 @@ D --> F[计入相应统计]
 - `buildReportChatModelUsage`: 排除others桶的模型使用统计
 - `buildReportModelEfficiency`: 排除others桶的模型效率统计
 
-**更新** 新增others桶过滤功能，确保数据准确性与GitHub UI对齐。该功能已在测试中得到验证，真实企业报表数据下各图表均不再出现others桶。
+**新增** others桶过滤功能，确保数据准确性与GitHub UI对齐。该功能已在测试中得到验证，真实企业报表数据下各图表均不再出现others桶。
 
 **章节来源**
 - [insights-aggregator.js:251-291](file://lib/insights-aggregator.js#L251-L291)
@@ -457,6 +484,15 @@ Insights模块在设计时充分考虑了性能优化：
 3. 验证测试用例是否通过
 4. 查看真实企业报表数据验证
 
+#### 规则引擎问题
+**症状**: 洞察建议不触发或触发不正确
+**原因**: 阈值设置不当或数据格式问题
+**解决方案**:
+1. 检查10类规则的触发条件
+2. 验证输入数据的完整性和准确性
+3. 查看日志输出了解规则执行过程
+4. 使用测试用例验证规则逻辑
+
 **章节来源**
 - [insights.js:26-29](file://routes/insights.js#L26-L29)
 - [README.md:617-622](file://README.md#L617-L622)
@@ -468,6 +504,7 @@ Insights模块在设计时充分考虑了性能优化：
 3. **验证数据格式**: 确保GitHub API返回的数据格式正确
 4. **测试缓存**: 验证缓存机制是否正常工作
 5. **验证过滤逻辑**: 确认others桶过滤功能正常工作
+6. **测试规则引擎**: 使用测试用例验证10类规则的触发逻辑
 
 ## 结论
 
@@ -475,11 +512,12 @@ Insights数据聚合模块是一个设计精良的企业级数据分析组件，
 
 ### 优势
 - **模块化设计**: 清晰的分层架构便于维护和扩展
-- **智能洞察**: 基于业务规则的自动化建议生成
+- **智能洞察**: 基于10类业务规则的自动化建议生成
 - **容错性强**: 部分API失败不影响整体功能
 - **性能优化**: 多层缓存和异步处理机制
 - **可视化丰富**: 多种图表类型满足不同分析需求
 - **数据准确性**: 通过others桶过滤确保与GitHub UI对齐
+- **全面覆盖**: 10类规则涵盖ROI优化、Agent采用率、代码重构、模型优化、补全接受率、模型集中度、语言分布、技术栈平衡、规模化产出等各个方面
 
 ### 应用场景
 - Copilot使用情况监控
@@ -487,6 +525,8 @@ Insights数据聚合模块是一个设计精良的企业级数据分析组件，
 - AI工具采用率评估
 - 代码生成效率优化
 - 技术栈使用趋势分析
+- 模型使用策略优化
+- AI规模化产出治理
 
 ### 发展方向
 - 增加更多业务指标和洞察规则
@@ -495,6 +535,6 @@ Insights数据聚合模块是一个设计精良的企业级数据分析组件，
 - 增强数据导出和报告功能
 - 扩展多租户支持能力
 
-**更新** 新增完整的Copilot Insights仪表板功能，提供双Tab看板设计，包含Copilot IDE Usage和Code Generation两个分析面板，为企业用户提供全面的AI工具使用洞察分析能力。**新增** others桶过滤功能，确保数据准确性与GitHub UI对齐。
+**大幅增强** 规则引擎现已支持10种不同类型的业务洞察，为企业用户提供全面的AI工具使用洞察分析能力。**新增** others桶过滤功能，确保数据准确性与GitHub UI对齐。
 
-该模块为Copilot Enterprise用户提供了强大的数据分析和洞察生成功能，是企业级Copilot管理的重要工具。
+该模块为Copilot Enterprise用户提供了强大的数据分析和洞察生成功能，是企业级Copilot管理的重要工具。通过10类智能规则，能够自动识别团队在AI工具使用过程中的各种问题并提供针对性的优化建议，显著提升团队协作效率和代码质量。
