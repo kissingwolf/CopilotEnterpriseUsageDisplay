@@ -367,7 +367,7 @@ curl -X POST http://localhost:3000/api/usage/refresh \
 ### 1) 设计目标
 
 - 主页 `/` 与登录页 `/admin` 保持公开，任何访客都能看。
-- “管理类”页面（用户映射、Team 月度账单、Cost Center 管理）仅限管理员访问。
+- “管理类”页面（用户映射、Team 月度账单、Cost Center、User Budget）及其变更操作仅限管理员访问。
 - 未登录访问受护页面时 302 重定向到 `/admin?next=<原始路径>`，登录成功后自动跳回。
 
 ### 2) 受护路径清单
@@ -380,7 +380,10 @@ curl -X POST http://localhost:3000/api/usage/refresh \
 | `/user`、`/user.html` | 是 | 用户映射管理 |
 | `/billpage`、`/billpage.html` | 是 | Team 月度账单 |
 | `/costcenter`、`/costcenter.html`、`/costcenter/:name` | 是 | Cost Center 管理 |
-| `/api/*` | 否（当前仅护页面） | 需仅护页面方案；后续如需依照可复用 `requireAdminApi` 中间件 |
+| `/userbudget`、`/userbudget.html` | 是 | User Budget 管理 |
+| `POST /api/usage/refresh` | 否 | 主页公开刷新流程 |
+| 账单刷新、Cost Center 变更、User Budget CRUD、用户映射上传/重载 | 是 | 统一由管理操作授权中间件保护，未登录返回 401 JSON |
+| 其他只读 `/api/*` | 否 | 看板查询接口保持公开 |
 
 > 守卫中间件挂载在 `express.static` 之前，以避免通过直接请求 `/user.html` 等静态资源绕过鉴权。
 
@@ -413,6 +416,7 @@ npm start
 - **Cookie 加固**：`httpOnly`（抵御 XSS 读取）、`sameSite=lax`（抵御 CSRF）、生产环境 `secure=true`（仅 HTTPS 下传输）。
 - **会话过期**：8 小时滑动过期（`rolling: true`），闲置超时自动退出。
 - **静态资源不被绕过**：鉴权中间件挂载顺序在 `express.static` 之前，同时护住 `/user`、`/user.html` 等两种路径形式。
+- **管理操作统一授权**：管理写操作在组合根单点执行 Session 鉴权，避免各业务路由遗漏；主页 Usage 刷新保持公开。
 - **生产严控**：`NODE_ENV=production` 且未设 `SESSION_SECRET` 时服务拒绝启动，避免默认弱密钥上生产。
 
 ## 自检脚本说明
@@ -628,6 +632,14 @@ sudo systemctl reload nginx
 - 部署交接时，`.env` 文件权限建议设为 `chmod 600` 并归属服务账号，避免同服务器上其他用户读取 `ADMIN_PASSWORD_HASH` 与 `SESSION_SECRET`。
 
 ## 更新日志
+
+### v3.16 — 统一账期完整性与管理操作授权
+
+- **账期完整性统一** — `Usage` 周期聚合与 `Monthly Bill` 共同使用日期覆盖率规则；SQLite 缺失任一账期日期时不再静默计算残缺账单，而是回退 GitHub 月度用量。
+- **强制刷新提交门槛** — 整月逐日刷新全部成功后才重算并事务替换月账单；任一日期失败返回 502，以 SQLite 事务恢复刷新前的每日缓存并保留原月账单。
+- **严格 UTC 日期** — 拒绝 `2026-02-31` 等不存在的日历日期，范围枚举复用同一解析接口，默认账期改用 UTC 年月。
+- **管理操作统一授权** — 账单刷新、Cost Center 变更、User Budget CRUD、用户映射上传/重载统一要求管理员 Session；公开 Dashboard 的 Usage 刷新保持可用。
+- **TDD 覆盖** — 新增账期缺失回退、刷新失败保留、授权路径矩阵、严格日期和 UTC 跨年边界测试。
 
 ### v3.15 — Insights 规则引擎扩展至 10 条兜底规则
 

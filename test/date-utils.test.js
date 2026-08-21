@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-const { parseDateStr, enumerateDays, buildDateKey } = require("../lib/date-utils");
+const { parseDateStr, enumerateDays, buildDateKey, assessPeriodCoverage } = require("../lib/date-utils");
 
 describe("parseDateStr", () => {
   it("parses a valid YYYY-MM-DD string", () => {
@@ -21,6 +21,12 @@ describe("parseDateStr", () => {
     expect(parseDateStr("2025/03/15")).toBeNull();
     expect(parseDateStr("not-a-date")).toBeNull();
     expect(parseDateStr("20251301")).toBeNull();
+  });
+
+  it("returns null for calendar dates that do not exist", () => {
+    expect(parseDateStr("2025-02-29")).toBeNull();
+    expect(parseDateStr("2026-02-31")).toBeNull();
+    expect(parseDateStr("2025-13-01")).toBeNull();
   });
 
   it("returns null for non-string inputs", () => {
@@ -55,6 +61,7 @@ describe("enumerateDays", () => {
 
   it("returns empty array for invalid dates", () => {
     expect(enumerateDays("bad", "dates")).toEqual([]);
+    expect(enumerateDays("2025-02-29", "2025-03-01")).toEqual([]);
   });
 });
 
@@ -69,5 +76,18 @@ describe("buildDateKey", () => {
 
   it("pads single-digit month/day", () => {
     expect(buildDateKey(2025, 1, 9)).toBe("2025-01-09");
+  });
+});
+
+describe("assessPeriodCoverage", () => {
+  it("reports a billing period as incomplete when any expected date is missing", () => {
+    expect(assessPeriodCoverage("2025-04-01", "2025-04-03", [
+      "2025-04-01",
+      "2025-04-03",
+    ])).toEqual({
+      complete: false,
+      expectedDays: 3,
+      missingDates: ["2025-04-02"],
+    });
   });
 });

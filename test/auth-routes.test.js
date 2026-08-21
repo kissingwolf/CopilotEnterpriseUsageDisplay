@@ -6,7 +6,7 @@ import { fileURLToPath } from "url";
 import path from "path";
 
 import createAuthRouter from "../routes/auth.js";
-import { requireAdminPage } from "../lib/auth.js";
+import { requireAdminPage, requireAdminMutation } from "../lib/auth.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -23,6 +23,11 @@ function buildApp() {
     }),
   );
   app.use(createAuthRouter());
+  app.use(requireAdminMutation);
+
+  app.get("/api/example", (_req, res) => res.json({ ok: true }));
+  app.post("/api/usage/refresh", (_req, res) => res.json({ ok: true }));
+  app.post("/api/bill/refresh", (_req, res) => res.json({ ok: true }));
 
   // Wire up a guarded page so we can test the middleware end-to-end.
   app.get("/user", requireAdminPage, (req, res) => res.status(200).send("USER PAGE"));
@@ -179,5 +184,60 @@ describe("page guard middleware", () => {
       const admin = await fetch(`${base}/admin`);
       expect(admin.status).toBe(200);
     });
+  });
+});
+
+describe("admin mutation authorization seam", () => {
+  it("keeps dashboard refresh public and rejects unauthenticated admin mutations", async () => {
+    await withApp(async (base) => {
+      const read = await fetch(`${base}/api/example`);
+      expect(read.status).toBe(200);
+
+      const refresh = await fetch(`${base}/api/usage/refresh`, { method: "POST" });
+      expect(refresh.status).toBe(200);
+
+      const adminOperations = [
+        ["POST", "/api/bill/refresh"],
+        ["POST", "/api/cost-centers/123/add-users-from-teams"],
+        ["POST", "/api/user-budgets"],
+        ["PATCH", "/api/user-budgets/123"],
+        ["DELETE", "/api/user-budgets/123"],
+        ["POST", "/user/upload-members"],
+        ["POST", "/user/reload-mapping"],
+      ];
+      for (const [method, pathname] of adminOperations) {
+        const mutation = await fetch(`${base}${pathname}`, { method });
+        expect(mutation.status, `${method} ${pathname}`).toBe(401);
+        expect(await mutation.json()).toEqual({
+          ok: false,
+          message: "Admin authentication required",
+        });
+      }
+    });
+  });
+
+  it("allows business mutations after admin login", async () => {
+    process.env.ADMIN_USER = "kevin";
+    process.env.ADMIN_PASSWORD_HASH = bcrypt.hashSync("s3cret!", 4);
+    try {
+      await withApp(async (base) => {
+        const login = await fetch(`${base}/admin/login`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ user: "kevin", password: "s3cret!" }),
+        });
+        const cookie = getCookie(login);
+
+        const mutation = await fetch(`${base}/api/bill/refresh`, {
+          method: "POST",
+          headers: { Cookie: cookie },
+        });
+        expect(mutation.status).toBe(200);
+        expect(await mutation.json()).toEqual({ ok: true });
+      });
+    } finally {
+      delete process.env.ADMIN_USER;
+      delete process.env.ADMIN_PASSWORD_HASH;
+    }
   });
 });

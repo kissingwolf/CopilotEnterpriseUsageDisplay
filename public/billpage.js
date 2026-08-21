@@ -239,7 +239,7 @@
 
     var ok = window.confirm(
       "强制刷新 " + val + " 数据？\n\n" +
-      "将清除该月本地缓存并逐日回源 GitHub API，可能耗时较长（30+ 次 API 调用）。"
+      "将逐日回源 GitHub API，全部成功后更新账单，可能耗时较长（30+ 次 API 调用）。"
     );
     if (!ok) return;
 

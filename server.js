@@ -8,7 +8,7 @@ const logger = require("./lib/logger");
 const { UsageStore } = require("./lib/usage-store");
 const UserMappingService = require("./lib/user-mapping");
 const { initEtagCache } = require("./lib/github-api");
-const { requireAdminPage } = require("./lib/auth");
+const { requireAdminPage, requireAdminMutation } = require("./lib/auth");
 const createAuthRouter = require("./routes/auth");
 
 const app = express();
@@ -43,6 +43,7 @@ app.use(session({
 
 /* ── Admin auth routes (login / logout / session) — MUST be before static ── */
 app.use(createAuthRouter());
+app.use(requireAdminMutation);
 
 /* ── Admin login/console page — explicit route so /admin works without .html ── */
 app.get("/admin", (_req, res) => {

@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 
 let helpers;
 
@@ -111,6 +111,22 @@ describe("buildQueryParams", () => {
     expect(params.get("year")).toBe("2026");
     expect(params.get("month")).toBe("5");
     expect(params.get("cost_center_id")).toBe("cc-123");
+  });
+
+  it("uses the UTC year and month when no billing period is configured", () => {
+    const originalTimezone = process.env.TZ;
+    process.env.TZ = "Pacific/Kiritimati";
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2025-12-31T12:30:00Z"));
+    try {
+      const params = helpers.buildQueryParams();
+      expect(params.get("year")).toBe("2025");
+      expect(params.get("month")).toBe("12");
+    } finally {
+      vi.useRealTimers();
+      if (originalTimezone === undefined) delete process.env.TZ;
+      else process.env.TZ = originalTimezone;
+    }
   });
 });
 

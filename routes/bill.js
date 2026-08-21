@@ -7,7 +7,7 @@ const logger = require("../lib/logger");
 const { PLAN_CONFIG, calcAmount, resolveBillingModel, resolveOverageUnitPrice } = require("../lib/billing-config");
 const { githubGetJson, MAX_CONCURRENT_GITHUB } = require("../lib/github-api");
 const { toNumber, pickUser, writeError, buildQueryParams, buildEndpoint, isCopilotBillingItem, normalizeBillingAmount } = require("../lib/helpers");
-const { enumerateDays } = require("../lib/date-utils");
+const { enumerateDays, assessPeriodCoverage } = require("../lib/date-utils");
 const { ensureSeatsData } = require("./seats");
 
 // Compute per-user overage in a billing-model-aware way.
@@ -202,17 +202,15 @@ function createBillRouter({ usageStore, teamCache, userMappingService, usageRout
     const rows = usageStore.getDaysInRange(startStr, endStr);
     if (!rows || rows.length === 0) return null;
 
-    // Check completeness: count expected days
-    const start = new Date(startStr + "T00:00:00Z");
-    const end = new Date(endStr + "T00:00:00Z");
-    let expectedDays = 0;
-    const cur = new Date(start);
-    while (cur <= end) {
-      expectedDays++;
-      cur.setUTCDate(cur.getUTCDate() + 1);
+    const coverage = assessPeriodCoverage(startStr, endStr, rows.map((row) => row.date));
+    if (!coverage.complete) {
+      logger.info(
+        { startStr, endStr, expectedDays: coverage.expectedDays, missingDates: coverage.missingDates },
+        "SQLite billing period incomplete, falling back to GitHub API"
+      );
+      return null;
     }
 
-    // We allow partial coverage — use what we have
     const byUser = new Map();
     for (const row of rows) {
       const ranking = row.ranking ? JSON.parse(row.ranking) : null;
@@ -394,8 +392,8 @@ function createBillRouter({ usageStore, teamCache, userMappingService, usageRout
 
   /**
    * POST /api/bill/refresh
-   * Force-refresh a whole month: drop SQLite daily/monthly cache for the
-   * month, re-fetch every day from GitHub, recompute the bill, and return.
+    * Force-refresh a whole month: snapshot daily rows, re-fetch every day from
+    * GitHub, then recompute the bill only when the whole period succeeds.
    * Body: { year, month }
    */
   router.post("/api/bill/refresh", async (req, res) => {
@@ -429,12 +427,9 @@ function createBillRouter({ usageStore, teamCache, userMappingService, usageRout
 
       logger.info({ yearMonth: ym, days: days.length }, "Force-refreshing month");
 
-      // 1. Wipe stale cached rows for this month so nothing falls back to them.
-      const removedDaily = usageStore.deleteDaysInMonth(year, month);
-      usageStore.deleteBill(ym);
-      logger.info({ yearMonth: ym, removedDaily }, "Cleared SQLite cache for month");
-
-      // 2. Refresh every day in the period (concurrent, throttled).
+      // Refresh every day in place. The existing monthly bill remains available
+      // until every date succeeds and saveBill() atomically replaces it.
+      const dailySnapshot = usageStore.getDaysInRange(period.start, period.end);
       const failedDates = [];
       let refreshedDays = 0;
       for (let i = 0; i < days.length; i += MAX_CONCURRENT_GITHUB) {
@@ -454,7 +449,21 @@ function createBillRouter({ usageStore, teamCache, userMappingService, usageRout
         }
       }
 
-      // 3. Recompute the monthly bill from the fresh daily rows.
+      if (failedDates.length > 0) {
+        usageStore.restoreDaysInRange(period.start, period.end, dailySnapshot);
+        return res.status(502).json({
+          ok: false,
+          yearMonth: ym,
+          status: "refresh_failed",
+          message: "部分日期刷新失败，已恢复每日缓存并保留原账单",
+          dateRange: { start: period.start, end: period.end },
+          refreshedDays,
+          failedDates,
+          fetchedAt: new Date().toISOString(),
+        });
+      }
+
+      // Recompute only after the whole billing period refreshed successfully.
       const { billRows, hasUsage } = await computeBill(year, month, period);
       const directSpentMap = await fetchDirectCostCenterSpentMap(year, month, billRows.map((row) => row.team));
       const teams = groupByTeam(billRows, directSpentMap);

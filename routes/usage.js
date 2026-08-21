@@ -14,7 +14,7 @@ const {
 } = require("../lib/billing-config");
 const { githubGetJson } = require("../lib/github-api");
 const { toNumber, pickUser, writeError, buildQueryParams, buildCopilotUsageEndpoint } = require("../lib/helpers");
-const { enumerateDays } = require("../lib/date-utils");
+const { parseDateStr, enumerateDays, assessPeriodCoverage } = require("../lib/date-utils");
 
 const CACHE_TTL_MS = (Number(requiredEnv("CACHE_TTL")) || 300) * 1000;
 
@@ -207,17 +207,24 @@ module.exports = function createUsageRouter({ usageStore, teamCache, userMapping
     const endDay = isCurrentMonth
       ? Math.min(now.getUTCDate(), lastDayOfMonth)
       : lastDayOfMonth;
-    const expectedDays = endDay - cycleStartDay + 1; // days startDay..endDay
-
     const pad = (n) => String(n).padStart(2, "0");
     const startStr = `${year}-${pad(month)}-${pad(cycleStartDay)}`;
     const endStr = `${year}-${pad(month)}-${pad(endDay)}`;
     const rows = usageStore.getDaysInRange(startStr, endStr);
 
     /* Integrity check 1: coverage */
-    if (rows.length < expectedDays) {
+    const coverage = assessPeriodCoverage(startStr, endStr, rows.map((row) => row.date));
+    if (!coverage.complete) {
       logger.info(
-        { year, month, startDay: cycleStartDay, endDay, haveDays: rows.length, expectedDays },
+        {
+          year,
+          month,
+          startDay: cycleStartDay,
+          endDay,
+          haveDays: rows.length,
+          expectedDays: coverage.expectedDays,
+          missingDates: coverage.missingDates,
+        },
         "SQLite cycle incomplete (missing days), falling back to GitHub API"
       );
       return null;
@@ -470,13 +477,6 @@ module.exports = function createUsageRouter({ usageStore, teamCache, userMapping
         amount: Math.round(row.amount * 10000) / 10000,
         hasAmount: !!row.hasAmount,
       }));
-  }
-
-  function parseDateStr(str) {
-    if (!str || typeof str !== "string") return null;
-    const m = str.match(/^(\d{4})-(\d{2})-(\d{2})$/);
-    if (!m) return null;
-    return { year: Number(m[1]), month: Number(m[2]), day: Number(m[3]) };
   }
 
   /* ── Routes ── */
