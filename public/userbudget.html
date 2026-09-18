@@ -26,6 +26,7 @@
             <input type="search" id="searchInput" class="auto-select" placeholder="GitHub 登录 / AD 名" style="width:220px;" />
             <button id="refreshBtn" class="refresh-btn">刷新</button>
             <button id="newBudgetBtn" class="info-btn" type="button" style="margin-left:12px;">+ 新建 User Budget</button>
+            <button id="exportBtn" class="info-btn" type="button" style="margin-left:6px;">导出 Excel</button>
           </div>
         </div>
 
@@ -40,6 +41,7 @@
                 <th>AD 名称</th>
                 <th>SKU</th>
                 <th class="cc-money-col">预算</th>
+                <th>预算周期</th>
                 <th>防超支</th>
                 <th>警告</th>
                 <th style="width:140px;">操作</th>
@@ -47,7 +49,7 @@
             </thead>
             <tbody id="tbody">
               <tr>
-                <td colspan="7" class="empty">暂无数据，请点击"刷新"。</td>
+                <td colspan="8" class="empty">暂无数据，请点击"刷新"。</td>
               </tr>
             </tbody>
           </table>

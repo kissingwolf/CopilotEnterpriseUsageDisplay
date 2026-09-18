@@ -10,6 +10,7 @@
  */
 const express = require("express");
 const path = require("path");
+const ExcelJS = require("exceljs");
 const logger = require("../lib/logger");
 const { requiredEnv } = require("../lib/billing-config");
 const {
@@ -22,6 +23,7 @@ const {
 const { toNumber, writeError } = require("../lib/helpers");
 
 const ALLOWED_SKUS = new Set(["ai_credits", "premium_requests"]);
+const EXPIRATION_MODES = new Set(["never", "next_billing_cycle", "specific_date"]);
 
 function getEnterprise() {
   const enterprise = requiredEnv("ENTERPRISE_SLUG");
@@ -31,6 +33,29 @@ function getEnterprise() {
 
 function resolveBudgetType(sku) {
   return "BundlePricing";
+}
+
+function getNextBillingCycleStart(now = new Date()) {
+  return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1)).toISOString().slice(0, 10);
+}
+
+function validateFutureUtcDate(value) {
+  const date = String(value || "").trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || new Date(`${date}T00:00:00.000Z`).toISOString().slice(0, 10) !== date) {
+    throw new Error("过期日期必须为 YYYY-MM-DD 格式。");
+  }
+  const today = new Date().toISOString().slice(0, 10);
+  if (date <= today) throw new Error("过期日期必须晚于当前 UTC 日期。");
+  return date;
+}
+
+function resolveExpiration(body, { clearWhenNever = false } = {}) {
+  const mode = body?.expirationMode;
+  if (mode == null || mode === "") return undefined;
+  if (!EXPIRATION_MODES.has(mode)) throw new Error("预算周期无效。");
+  if (mode === "never") return clearWhenNever ? null : undefined;
+  if (mode === "next_billing_cycle") return getNextBillingCycleStart();
+  return validateFutureUtcDate(body?.expiresAt);
 }
 
 function normalizeBudget(raw, lookup) {
@@ -47,10 +72,25 @@ function normalizeBudget(raw, lookup) {
     budgetProductSku: String(raw?.budget_product_sku || ""),
     budgetType: String(raw?.budget_type || ""),
     budgetAmount: toNumber(raw?.budget_amount),
+    expiresAt: raw?.expires_at ? String(raw.expires_at) : null,
     preventFurtherUsage: Boolean(raw?.prevent_further_usage),
     willAlert: Boolean(alerting?.will_alert),
     alertRecipients: Array.isArray(alerting?.alert_recipients) ? alerting.alert_recipients.slice() : [],
   };
+}
+
+function formatExpirationForExport(expiresAt) {
+  return expiresAt ? `在指定日期过期（UTC）：${expiresAt}` : "永不过期";
+}
+
+function filterBudgets(budgets, query) {
+  const sku = String(query?.sku || "").trim().toLowerCase();
+  const search = String(query?.search || "").trim().toLowerCase();
+  return budgets.filter((budget) => {
+    if (sku && budget.budgetProductSku.toLowerCase() !== sku) return false;
+    if (!search) return true;
+    return `${budget.user} ${budget.adName || ""}`.toLowerCase().includes(search);
+  });
 }
 
 async function fetchUserBudgets(enterprise) {
@@ -88,7 +128,7 @@ function validateCreatePayload(body) {
   if (!Number.isInteger(amount)) throw new Error("预算金额必须为整数（USD 整数美元）。");
   if (willAlert && alertRecipients.length === 0) throw new Error("启用警告时必须至少填写一名接收人。");
 
-  return { user, sku, amount, willAlert, alertRecipients };
+  return { user, sku, amount, willAlert, alertRecipients, expiresAt: resolveExpiration(body) };
 }
 
 function validateUpdatePayload(body) {
@@ -108,6 +148,8 @@ function validateUpdatePayload(body) {
     if (willAlert && alertRecipients.length === 0) throw new Error("启用警告时必须至少填写一名接收人。");
     out.budget_alerting = { will_alert: willAlert, alert_recipients: alertRecipients };
   }
+  const expiresAt = resolveExpiration(body, { clearWhenNever: true });
+  if (expiresAt !== undefined) out.expires_at = expiresAt;
   // user scope must keep prevent_further_usage = true; never allow false here
   out.prevent_further_usage = true;
   if (Object.keys(out).length === 1 && "prevent_further_usage" in out) {
@@ -140,6 +182,40 @@ module.exports = function createUserBudgetRouter({ userMappingService } = {}) {
     } catch (error) { writeError(res, error); }
   });
 
+  router.get("/api/user-budgets/export", async (req, res) => {
+    try {
+      const enterprise = getEnterprise();
+      const rawBudgets = await fetchUserBudgets(enterprise);
+      const logins = rawBudgets.map((budget) => budget?.user).filter(Boolean);
+      const lookup = userMappingService ? userMappingService.buildLookup(logins) : {};
+      const budgets = filterBudgets(rawBudgets.map((budget) => normalizeBudget(budget, lookup)), req.query);
+      const workbook = new ExcelJS.Workbook();
+      const worksheet = workbook.addWorksheet("User Budgets");
+      worksheet.columns = [
+        { header: "GitHub 登录", key: "user", width: 24 },
+        { header: "AD 名称", key: "adName", width: 24 },
+        { header: "SKU", key: "sku", width: 22 },
+        { header: "预算", key: "amount", width: 14 },
+        { header: "预算周期", key: "expiration", width: 38 },
+      ];
+      worksheet.getRow(1).font = { bold: true };
+      budgets.forEach((budget) => {
+        worksheet.addRow({
+          user: budget.user,
+          adName: budget.adName || "--",
+          sku: budget.budgetProductSku,
+          amount: budget.budgetAmount,
+          expiration: formatExpirationForExport(budget.expiresAt),
+        });
+      });
+      const date = new Date().toISOString().slice(0, 10);
+      res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+      res.setHeader("Content-Disposition", `attachment; filename="user-budgets-${date}.xlsx"`);
+      await workbook.xlsx.write(res);
+      res.end();
+    } catch (error) { writeError(res, error); }
+  });
+
   router.get("/api/user-budgets/:id", async (req, res) => {
     try {
       const enterprise = getEnterprise();
@@ -160,7 +236,7 @@ module.exports = function createUserBudgetRouter({ userMappingService } = {}) {
   router.post("/api/user-budgets", async (req, res) => {
     try {
       const enterprise = getEnterprise();
-      const { user, sku, amount, willAlert, alertRecipients } = validateCreatePayload(req.body);
+      const { user, sku, amount, willAlert, alertRecipients, expiresAt } = validateCreatePayload(req.body);
       const payload = {
         budget_amount: amount,
         prevent_further_usage: true,
@@ -171,6 +247,7 @@ module.exports = function createUserBudgetRouter({ userMappingService } = {}) {
         budget_alerting: { will_alert: willAlert, alert_recipients: alertRecipients },
         user,
       };
+      if (expiresAt !== undefined) payload.expires_at = expiresAt;
       const result = await githubPostJson(
         `/enterprises/${encodeURIComponent(enterprise)}/settings/billing/budgets`,
         payload
@@ -191,6 +268,7 @@ module.exports = function createUserBudgetRouter({ userMappingService } = {}) {
         `/enterprises/${encodeURIComponent(enterprise)}/settings/billing/budgets/${encodeURIComponent(id)}`,
         payload
       );
+      invalidateCacheByPrefix("settings/billing/budgets");
       logger.info({ id, payload }, "user-budget updated");
       res.json({ ok: true, message: result?.message || "Budget updated", budget: result?.budget || null });
     } catch (error) { writeError(res, error); }

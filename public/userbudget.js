@@ -10,6 +10,7 @@
   var skuSel = document.getElementById("skuSel");
   var searchInput = document.getElementById("searchInput");
   var newBudgetBtn = document.getElementById("newBudgetBtn");
+  var exportBtn = document.getElementById("exportBtn");
   var tbody = document.getElementById("tbody");
   var meta = document.getElementById("meta");
   var errorBox = document.getElementById("error");
@@ -31,6 +32,20 @@
 
   function escapeAttr(s) { return C.escapeHtml(s).replace(/"/g, "&quot;"); }
 
+  function getNextBillingCycleStart() {
+    var now = new Date();
+    return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1)).toISOString().slice(0, 10);
+  }
+
+  function formatExpiration(expiresAt) {
+    return expiresAt ? "指定日期（UTC）：" + expiresAt : "永不过期";
+  }
+
+  function getExpirationMode(expiresAt) {
+    if (!expiresAt) return "never";
+    return expiresAt === getNextBillingCycleStart() ? "next_billing_cycle" : "specific_date";
+  }
+
   function applyFilter(rows) {
     var sku = (skuSel.value || "").trim().toLowerCase();
     var q = (searchInput.value || "").trim().toLowerCase();
@@ -45,7 +60,7 @@
   function renderRows() {
     var rows = applyFilter(allBudgets);
     if (!rows.length) {
-      tbody.innerHTML = '<tr><td colspan="7" class="empty">无符合条件的 User Budget。</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="8" class="empty">无符合条件的 User Budget。</td></tr>';
       return;
     }
     var html = "";
@@ -60,6 +75,7 @@
         '<td><span title="' + escapeAttr(b.user) + '">' + C.escapeHtml(displayName) + "</span></td>" +
         '<td><span class="cc-tag">' + C.escapeHtml(b.budgetProductSku) + "</span></td>" +
         '<td class="cc-money-col">' + C.formatUsd(b.budgetAmount) + "</td>" +
+        '<td>' + C.escapeHtml(formatExpiration(b.expiresAt)) + "</td>" +
         "<td>" + (b.preventFurtherUsage ? "✓" : "✗") + "</td>" +
         '<td title="' + escapeAttr(alertTitle) + '">' + alertText + "</td>" +
         "<td>" +
@@ -85,7 +101,7 @@
   async function loadList() {
     setError("");
     setMeta(latestMetaText, true);
-    C.renderSkeletonRows(tbody, 7, 5);
+    C.renderSkeletonRows(tbody, 8, 5);
     try {
       var data = await C.apiFetchJson("/api/user-budgets", {}, "获取 User Budget 失败");
       allBudgets = Array.isArray(data.budgets) ? data.budgets : [];
@@ -94,7 +110,7 @@
       renderRows();
     } catch (err) {
       setError(err.message || "加载失败");
-      tbody.innerHTML = '<tr><td colspan="7" class="empty">加载失败。</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="8" class="empty">加载失败。</td></tr>';
       setMeta(latestMetaText, false);
     }
   }
@@ -137,6 +153,8 @@
     var willAlert = isEdit ? b.willAlert : false;
     var recipients = isEdit ? (b.alertRecipients || []).join(", ") : "";
     var adName = isEdit ? (b.adName || "") : "";
+    var expirationMode = isEdit ? getExpirationMode(b.expiresAt) : "never";
+    var expiresAt = isEdit && b.expiresAt ? b.expiresAt : "";
 
     var html = '<div class="ub-form">';
     html += '<div class="ub-row"><label>GitHub 登录</label>';
@@ -159,6 +177,16 @@
 
     html += '<div class="ub-row"><label>预算金额 (USD 整数)</label>' +
       '<input id="ub-amount" type="number" min="1" step="1" value="' + escapeAttr(String(amount)) + '" />' +
+      "</div>";
+
+    html += '<div class="ub-row"><label>预算周期</label>' +
+      '<select id="ub-expiration-mode">' +
+        '<option value="never"' + (expirationMode === "never" ? " selected" : "") + '>永不过期</option>' +
+        '<option value="next_billing_cycle"' + (expirationMode === "next_billing_cycle" ? " selected" : "") + '>在下一个计费周期开始时过期</option>' +
+        '<option value="specific_date"' + (expirationMode === "specific_date" ? " selected" : "") + '>在指定日期过期（UTC）</option>' +
+      '</select></div>';
+    html += '<div id="ub-expires-at-row" class="ub-row"' + (expirationMode === "specific_date" ? "" : ' hidden') + '><label>过期日期（UTC）</label>' +
+      '<input id="ub-expires-at" type="date" value="' + escapeAttr(expiresAt) + '" />' +
       "</div>";
 
     html += '<div class="ub-row"><label>防止超支</label>' +
@@ -198,6 +226,9 @@
     var adInput = document.getElementById("ub-adname");
     var skuSelEl = document.getElementById("ub-sku");
     var amountInput = document.getElementById("ub-amount");
+    var expirationModeEl = document.getElementById("ub-expiration-mode");
+    var expiresAtRow = document.getElementById("ub-expires-at-row");
+    var expiresAtInput = document.getElementById("ub-expires-at");
     var willAlertEl = document.getElementById("ub-willalert");
     var recipientsInput = document.getElementById("ub-recipients");
     var submitBtn = document.getElementById("ub-submit");
@@ -219,17 +250,23 @@
     }
 
     cancelBtn.addEventListener("click", closeModal);
+    expirationModeEl.addEventListener("change", function () {
+      expiresAtRow.hidden = expirationModeEl.value !== "specific_date";
+    });
 
     submitBtn.addEventListener("click", async function () {
       showFormErr("");
       var user = userInput.value.trim();
       var sku = skuSelEl.value;
       var amount = Number(amountInput.value);
+      var expirationMode = expirationModeEl.value;
+      var expiresAt = expiresAtInput.value;
       var willAlert = !!(willAlertEl && willAlertEl.checked);
       var alertRecipients = recipientsInput.value.split(",").map(function (s) { return s.trim(); }).filter(Boolean);
 
       if (!user) { showFormErr("请填写 GitHub 登录名。"); return; }
       if (!Number.isInteger(amount) || amount <= 0) { showFormErr("预算金额必须为正整数。"); return; }
+      if (expirationMode === "specific_date" && !expiresAt) { showFormErr("请选择 UTC 过期日期。"); return; }
       if (willAlert && alertRecipients.length === 0) { showFormErr("启用警告时请至少填写一名接收人。"); return; }
 
       submitBtn.disabled = true;
@@ -245,13 +282,13 @@
           await C.apiFetchJson("/api/user-budgets", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ user: user, budgetProductSku: sku, budgetAmount: amount, willAlert: willAlert, alertRecipients: alertRecipients }),
+            body: JSON.stringify({ user: user, budgetProductSku: sku, budgetAmount: amount, willAlert: willAlert, alertRecipients: alertRecipients, expirationMode: expirationMode, expiresAt: expiresAt }),
           }, "创建 User Budget 失败");
         } else {
           await C.apiFetchJson("/api/user-budgets/" + encodeURIComponent(budget.id), {
             method: "PATCH",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ budgetAmount: amount, willAlert: willAlert, alertRecipients: alertRecipients }),
+            body: JSON.stringify({ budgetAmount: amount, willAlert: willAlert, alertRecipients: alertRecipients, expirationMode: expirationMode, expiresAt: expiresAt }),
           }, "更新 User Budget 失败");
         }
         closeModal();
@@ -326,6 +363,12 @@
   skuSel.addEventListener("change", renderRows);
   searchInput.addEventListener("input", renderRows);
   newBudgetBtn.addEventListener("click", openCreateModal);
+  exportBtn.addEventListener("click", function () {
+    var params = new URLSearchParams();
+    if (skuSel.value) params.set("sku", skuSel.value);
+    if (searchInput.value.trim()) params.set("search", searchInput.value.trim());
+    window.location.href = "/api/user-budgets/export" + (params.size ? "?" + params.toString() : "");
+  });
 
   /* ── Initial load ── */
   loadList();

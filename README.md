@@ -678,6 +678,13 @@ sudo systemctl reload nginx
 - **mode 维度无需改动** — `totals_by_feature`（mode 维度）不含 `others` 伪 feature，按 mode 的图表不受影响（已通过真实报表确认）。
 - **验证** — 真实企业报表数据下各图表均不再出现 `others`，且真实语言数值与 GitHub 卡片一致（如 Java `suggested=17,017 / added=3,418`）。新增回归测试断言伪桶被排除，全量测试 129/129 通过。
 
+### v3.11 — User Budget 周期与报表导出
+
+- **预算周期设置** — `/userbudget` 的新建与编辑弹窗支持“永不过期”“在下一个计费周期开始时过期”“在指定日期过期（UTC）”三种周期；后端将下个周期统一计算为下月 1 日（UTC），并校验指定日期为未来有效日期。
+- **预算周期展示** — User Budget 列表增加“预算周期”列，GitHub API 返回的 `expires_at` 会以 UTC 日期展示；未设置日期显示“永不过期”。
+- **导出 Excel** — “新建 User Budget”右侧新增“导出 Excel”，按当前 SKU 和搜索筛选条件导出 `GitHub 登录`、`AD 名称`、`SKU`、`预算`、`预算周期` 五列 `.xlsx` 文件。
+- **接口与测试** — 新增 `GET /api/user-budgets/export`；`test/user-budget.test.js` 覆盖指定日期、下个周期、清除过期时间和 Excel 文件内容。
+
 ### v3.10 — 首页导航增强
 
 - **新增“洞悉”按钮** — 首页信息栏在“数据分析”右侧新增“洞悉”入口，点击跳转 `/insights`，提升看板切换效率。
